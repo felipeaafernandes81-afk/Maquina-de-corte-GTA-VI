@@ -1,0 +1,2550 @@
+From 7bd9097a92dbe3e4f8131a678a05ebc0f221dac2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 03:46:49 +0000
+Subject: [PATCH 1/2] v1.1: corrige pausas, jump cuts e imagens; final Seguir;
+ popups logo/comparar; conferidor de cortes; mais reproduzido via yt-dlp;
+ motor se atualiza sozinho
+
+---
+ .claude-plugin/plugin.json                    |   2 +-
+ README.md                                     |  44 +--
+ skills/maquina-cortes-gta/SKILL.md            | 112 +++++---
+ .../references/estilo-metade-metade.md        |  42 ++-
+ .../references/estilo-referencias.md          |  39 +--
+ .../maquina-cortes-gta/references/ganchos.md  |  45 +--
+ .../references/problemas.md                   |   8 +-
+ skills/maquina-cortes-gta/scripts/setup.mjs   |  49 +++-
+ .../template/scripts/build.mjs                | 267 +++++++++--------
+ .../template/scripts/conferir-cortes.mjs      | 109 +++++++
+ .../template/scripts/mais-reproduzido.mjs     |  49 ++++
+ .../template/scripts/timeline.mjs             | 191 +++++++++++++
+ .../template/scripts/transcribe.mjs           |  10 +-
+ .../template/scripts/transcript-text.mjs      |  57 +++-
+ .../maquina-cortes-gta/template/src/Root.jsx  |   4 +
+ .../template/src/SplitCut.jsx                 | 270 +++++++++++-------
+ 16 files changed, 928 insertions(+), 370 deletions(-)
+ create mode 100644 skills/maquina-cortes-gta/template/scripts/conferir-cortes.mjs
+ create mode 100644 skills/maquina-cortes-gta/template/scripts/mais-reproduzido.mjs
+ create mode 100644 skills/maquina-cortes-gta/template/scripts/timeline.mjs
+
+diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+index 3193b93..6a9d27f 100644
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "maquina-cortes-gta",
+-  "version": "1.0.0",
++  "version": "1.1.0",
+   "description": "Transforma um vídeo de streamer ou podcast em vários cortes verticais de Shorts sobre GTA 6, cada um com um assunto e um gancho diferente, no estilo metade streamer e metade vídeo. Legenda palavra por palavra, pausas cortadas, zoom nos cortes e a marca d'água do seu perfil. Edição em Remotion, transcrição local com whisper.cpp.",
+   "author": {
+     "name": "Pedro Cardoso",
+diff --git a/README.md b/README.md
+index 2c4c5d7..ef98d5d 100644
+--- a/README.md
++++ b/README.md
+@@ -39,15 +39,20 @@ O visual é o de "metade streamer, metade vídeo": a pessoa em cima, gameplay ou
+ |---|---|
+ | "faz cortes desse vídeo" (link ou arquivo) | De 3 a 5 cortes de 20 a 60 s, **cada um de um assunto diferente e com um gancho diferente**, escolhidos pela transcrição |
+ | (automático) | Legenda **palavra por palavra** na divisa, com a palavra falada em amarelo |
+-| (automático) | **Pausas longas removidas** e **cortes rápidos** (quebra a cada ~3 s, com zoom leve, flash e swoosh) |
+-| (opcional) | **Imagens do GTA aparecendo** (busca no Google pela API oficial, ou arquivos seus) com animação e pop |
++| (automático) | Início e fim **encaixados nas palavras**: o corte nunca começa nem termina no meio de uma palavra |
++| (automático) | **Pausas entre frases encurtadas para 0,2 s** e **jump cuts secos** a cada ~3 s (só o zoom muda); flash e swoosh só nas viradas de assunto |
++| (opcional) | **Imagens do GTA aparecendo**: foto/arte, **logo transparente vindo em direção à tela** ou **comparação lado a lado** (GTA 5 e GTA 6); busca no Google pela API oficial ou arquivos seus |
+ | (opcional) | **Efeitos sonoros** (whoosh, impacto, pop) gerados com a ElevenLabs pela skill [sound-effects](THIRD_PARTY.md), que vem junto; usa créditos da sua conta |
+ | (automático) | Tela dividida: **streamer em cima, vídeo embaixo** (um trailer oficial do GTA VI ou o vídeo que você mandar) |
+ | (automático) | A **marca d'água do seu perfil** no canto superior direito de todos os cortes |
++| (automático) | Final **"Seguir → Seguindo"** nos últimos 3 s, com a sua logo e o seu nome |
++| (automático, link do YouTube) | Leitura do gráfico **"Mais reproduzidos"** para achar os trechos em que o público volta |
+ | "qual era o gancho de cada um?" | Tabela com o assunto, a frase de gancho, a duração, a nota e um título curto sugerido |
+ 
+ Cada corte sai em MP4 1080×1920, 30 fps.
+ 
++**Atualizando:** depois de atualizar o plugin, a skill percebe que o motor ficou desatualizado e copia os arquivos novos sozinha no próximo uso.
++
+ ## Instalação
+ 
+ Precisa do **Claude Code** (a skill roda comandos no seu computador) e de três programas que a instalação confere: **Node.js 18+** (de preferência 22+), **FFmpeg** e, para aceitar links, **yt-dlp**.
+@@ -120,9 +125,11 @@ Depois disso o fluxo é:
+ A skill lê a transcrição (palavras com tempo) e:
+ 
+ 1. divide a conversa em **assuntos**;
+-2. escolhe **um corte por assunto**, sem repetir o mesmo gancho nem sobrepor trechos;
+-3. dá **nota de 0 a 10** ao gancho de cada um (lacuna de curiosidade, fato específico, conflito ou opinião forte, entrada direta, payoff dentro do corte, se entende sozinho);
+-4. **descarta** o que fica abaixo de 6 e começa cada corte exatamente na frase de gancho.
++2. marca os trechos que caem nos **picos do "mais reproduzido"** (quando o vídeo é do YouTube e tem o gráfico);
++3. escolhe **um corte por assunto**, sem repetir o mesmo gancho nem sobrepor trechos;
++4. dá **nota de 0 a 10** ao gancho de cada um (lacuna de curiosidade, fato específico, conflito ou opinião forte, entrada direta, payoff dentro do corte, se entende sozinho);
++5. **descarta** o que fica abaixo de 6 e começa cada corte exatamente na frase de gancho;
++6. roda o **conferidor**, que mostra como cada corte abre e fecha e aponta aquecimento no começo ("então, galera"), frase sem fechar no fim, gancho fora do lugar e sobreposição.
+ 
+ O guia completo está em [`references/ganchos.md`](skills/maquina-cortes-gta/references/ganchos.md).
+ 
+@@ -130,22 +137,28 @@ O guia completo está em [`references/ganchos.md`](skills/maquina-cortes-gta/ref
+ 
+ ```
+ skills/maquina-cortes-gta/
+-├── SKILL.md                      o fluxo: perfil, vídeo, transcrição, escolha dos cortes, render
++├── SKILL.md                      o fluxo: perfil, vídeo, transcrição, escolha dos cortes, conferência, render
+ ├── references/
+-│   ├── ganchos.md                como escolher cortes pelo gancho (notas, assuntos, início e fim)
++│   ├── ganchos.md                como escolher cortes pelo gancho (processo, notas, início e fim, título)
+ │   ├── estilo-metade-metade.md   o layout, a legenda, o ritmo e o que dá para ajustar
++│   ├── estilo-referencias.md     o que foi medido nos vídeos de referência
+ │   └── problemas.md              erros comuns e como resolver
+ ├── scripts/
+-│   └── setup.mjs                 instala e confere tudo; grava o perfil e a logo
++│   ├── setup.mjs                 instala, confere e atualiza tudo; grava o perfil e a logo
++│   └── gerar-paleta-sfx.mjs      gera os efeitos sonoros com a ElevenLabs (opcional)
+ └── template/                     o motor (copiado para ~/.maquina-cortes-gta/engine)
+     ├── package.json              Remotion e whisper.cpp
+     ├── scripts/
+     │   ├── transcribe.mjs        áudio 16 kHz, whisper.cpp (palavra por palavra) e silêncios
+-    │   ├── transcript-text.mjs   a transcrição como "[mm:ss] frase", para a skill ler
+-    │   └── build.mjs             tira as pausas, refaz as legendas e renderiza cada corte
++    │   ├── transcript-text.mjs   a transcrição em frases ou palavra por palavra, para a skill ler
++    │   ├── mais-reproduzido.mjs  os picos do gráfico "Mais reproduzidos" do YouTube, pelo yt-dlp
++    │   ├── conferir-cortes.mjs   confere o cuts.json antes do render (gancho, payoff, duração, sobreposição)
++    │   ├── timeline.mjs          a conta da linha do tempo (pausas, jump cuts, viradas, legendas)
++    │   ├── buscar-imagens.mjs    busca de imagens no Google (API oficial)
++    │   └── build.mjs             monta e renderiza cada corte
+     └── src/
+         ├── Root.jsx              a composição de 1080×1920
+-        └── SplitCut.jsx          metade de cima, metade de baixo, legenda, zoom e marca d'água
++        └── SplitCut.jsx          as duas metades, legenda, zoom, popups, marca d'água e final "Seguir"
+ ```
+ 
+ A skill (o Claude) decide **o que cortar**; os scripts fazem o trabalho pesado de forma determinística: transcrever, medir silêncios, remapear as legendas para a nova linha do tempo e renderizar.
+@@ -153,10 +166,11 @@ A skill (o Claude) decide **o que cortar**; os scripts fazem o trabalho pesado d
+ ## Limites (para não criar expectativa errada)
+ 
+ - **Roda no seu computador.** O primeiro render também baixa o Chrome headless do Remotion. No meu teste, 7 segundos de corte levaram cerca de 20 s para renderizar; um corte de 40 s deve levar alguns minutos (estimativa, depende do seu computador).
+-- **A skill escolhe pelo texto, não pela imagem.** Ela não vê o vídeo; o enquadramento do rosto é o padrão (`x` 50, `y` 35) e é ajustado quando ela olha um quadro. Se a pessoa estiver fora do centro, vale conferir.
++- **A skill escolhe pelo texto (e pelo "mais reproduzido"), não pela imagem.** Ela não vê o vídeo; o enquadramento do rosto é o padrão (`x` 50, `y` 35) e é ajustado quando ela olha um quadro. Se a pessoa estiver fora do centro, vale conferir.
++- **Volume final não é normalizado.** Para −14 LUFS: `ffmpeg -i corte.mp4 -af loudnorm=I=-14:TP=-1 -c:v copy saida.mp4`.
+ - **Funciona melhor com uma pessoa falando em plano frontal.** Conversa com muita sobreposição de vozes gera legenda pior.
+ - **Qualidade da legenda** depende do modelo do whisper. O padrão é o `small`; para português mais exato use o `medium` (mais pesado).
+-- **Testado no Windows 11** (modelo `base`, vídeo de teste sintético). No macOS e no Linux o whisper.cpp é compilado na máquina e precisa de ferramentas de compilação; não testei.
++- **O render foi testado no Windows 11** (modelo `base`, vídeo de teste sintético). No macOS e no Linux o whisper.cpp é compilado na máquina e precisa de ferramentas de compilação; ainda não foi testado lá.
+ - **O [Remotion](https://www.remotion.dev/license) tem licença própria**: confira se o seu uso (por exemplo, em empresa) exige licença.
+ 
+ ## Aviso
+@@ -180,7 +194,3 @@ GTA e Grand Theft Auto são marcas da Rockstar Games / Take-Two Interactive. Est
+ 
+ [MIT](LICENSE).
+ 
+-
+-## Estilo de referência (12/11/2026)
+-
+-Os cortes seguem `skills/maquina-cortes-gta/references/estilo-referencias.md`: jump cuts secos, swoosh só em viradas de seção (`turns`), popups com imagem real, pausas ≤ 0,2 s, final "Seguir → Seguindo" e trecho escolhido pelo "mais reproduzido".
+diff --git a/skills/maquina-cortes-gta/SKILL.md b/skills/maquina-cortes-gta/SKILL.md
+index a556940..8128275 100644
+--- a/skills/maquina-cortes-gta/SKILL.md
++++ b/skills/maquina-cortes-gta/SKILL.md
+@@ -9,7 +9,7 @@ Você recebe um vídeo longo e entrega **vários cortes prontos** em 9:16, cada
+ 
+ Escreva pouco no chat: nunca despeje a transcrição nem JSON inteiro; mostre só o que o usuário precisa decidir ou receber.
+ 
+-`<skill>` = a pasta onde este SKILL.md está. `~/.maquina-cortes-gta` = pasta de dados do usuário (motor, whisper, nome do perfil e logo).
++`<skill>` = a pasta onde este SKILL.md está. `~/.maquina-cortes-gta` = pasta de dados do usuário (motor, whisper, nome do perfil e logo). `<motor>` = `~/.maquina-cortes-gta/engine/scripts`.
+ 
+ ## 0. Conferir a instalação
+ 
+@@ -17,33 +17,32 @@ Escreva pouco no chat: nunca despeje a transcrição nem JSON inteiro; mostre s
+ node "<skill>/scripts/setup.mjs" --check
+ ```
+ 
+-- `engine: false` ou `whisperModel: false`: rode `node "<skill>/scripts/setup.mjs"` (instala o Remotion e o whisper.cpp; leva alguns minutos e baixa arquivos grandes; avise o usuário antes).
++- `engine: false`, `whisperModel: false` ou `motorAtualizado: false`: rode `node "<skill>/scripts/setup.mjs"`. Na 1ª vez instala o Remotion e o whisper.cpp (alguns minutos, ~1 GB; avise antes). Com `motorAtualizado: false` só copia a versão nova dos scripts e componentes (rápido).
+ - `ffmpeg: false`: peça para o usuário instalar o FFmpeg (o script mostra o comando do sistema dele) e pare.
+ - `ytdlp: false`: só aceite arquivo de vídeo (não link) e diga como instalar o yt-dlp.
+-- Opcionais: `efeitosGerados: 0` (sem efeitos sonoros ainda), `elevenlabsKey` e `python` (para gerá-los) e `googleImagens` (para buscar imagens). Veja a seção "Cortes rápidos, imagens e efeitos sonoros".
+-- **Avise uma vez, em 3 linhas, e dê as opções** quando faltar algo opcional (não pare o trabalho por isso):
+-  - `efeitosGerados: 0` e `elevenlabsKey: false`: "Sem efeitos sonoros. Opções: (a) criar uma chave na ElevenLabs e definir `ELEVENLABS_API_KEY` (gasta créditos seus, 3 efeitos curtos); (b) colocar sons seus em `~/.maquina-cortes-gta/sfx/` (`impacto`, `whoosh`, `pop`, mp3 ou wav); (c) seguir sem efeitos."
+-  - `googleImagens: false`: "Sem busca de imagens no Google. Opções: (a) configurar `GOOGLE_API_KEY` e `GOOGLE_CSE_ID` (gratuito até 100 buscas por dia); (b) mandar as imagens como arquivo; (c) seguir sem imagens." O Google bloqueia a pesquisa por navegador automático (CAPTCHA), então não tente raspar a página; se você achar uma imagem por outro meio permitido (ex.: arte oficial no site da Rockstar), baixe e use como `file`.
++- **Opcionais** (avise uma vez, em até 3 linhas, com as opções; não pare o trabalho):
++  - `efeitosGerados: 0`: "Sem efeitos sonoros. Opções: (a) gerar com a ElevenLabs (`ELEVENLABS_API_KEY`, gasta créditos seus, 3 efeitos curtos); (b) colocar sons seus em `~/.maquina-cortes-gta/sfx/` (`impacto`, `whoosh`, `pop` e, se quiser, `clique`; mp3 ou wav); (c) seguir sem efeitos."
++  - `googleImagens: false`: "Sem busca de imagens no Google. Opções: (a) configurar `GOOGLE_API_KEY` e `GOOGLE_CSE_ID`; (b) mandar as imagens como arquivo; (c) seguir sem imagens." Não tente raspar a busca do Google por navegador (dá CAPTCHA). Arte oficial baixada de um site da Rockstar pode entrar como `file`.
+   - Depois da escolha do usuário, não pergunte de novo na mesma conversa.
+ 
+ ## 1. Perfil (só na primeira vez)
+ 
+ Se `perfilConfigurado` for `false`, peça **numa única mensagem**:
+ 
+-1. o **nome do perfil** como deve aparecer na marca d'água (ex.: `SEU CANAL`);
++1. o **nome do perfil** como deve aparecer na marca d'água e no final "Seguir" (ex.: `SEU CANAL`, sem @);
+ 2. a **logo** (o usuário anexa a imagem; PNG ou JPG, de preferência quadrada).
+ 
+-Ache o caminho do arquivo anexado na conversa e rode:
++Ache o caminho do arquivo anexado e rode:
+ 
+ ```bash
+ node "<skill>/scripts/setup.mjs" --profile "NOME DO PERFIL" --logo "CAMINHO/DA/LOGO.png"
+ ```
+ 
+-A marca d'água é a logo em **corte circular à esquerda e o nome ao lado**, no canto superior direito, em todos os cortes. Depois disso **não pergunte de novo**, a menos que o usuário peça para trocar.
++Depois disso **não pergunte de novo**, a menos que o usuário peça para trocar.
+ 
+ ## 2. Pedir o vídeo
+ 
+-Peça ao usuário o **vídeo de origem** (o streamer ou podcast): um **link** ou um **arquivo**. Na mesma mensagem, ofereça o **vídeo da metade de baixo** (gameplay, trailer ou B-roll, link ou arquivo). Se ele não tiver um, use o trailer oficial da Rockstar: `https://www.youtube.com/watch?v=rz1B4B2yBZY` (se o link falhar, peça outro).
++Peça o **vídeo de origem** (link ou arquivo) e, na mesma mensagem, ofereça o **vídeo da metade de baixo** (gameplay, trailer ou B-roll). Sem ele, use o trailer oficial da Rockstar: `https://www.youtube.com/watch?v=rz1B4B2yBZY` (se o link falhar, peça outro).
+ 
+ ## 3. Preparar a pasta de trabalho
+ 
+@@ -54,32 +53,42 @@ yt-dlp -S "res:1080" -f "bv*+ba/b" --merge-output-format mp4 --no-playlist -o "w
+ yt-dlp -S "res:720"  -f "bv*+ba/b" --merge-output-format mp4 --no-playlist -o "work/bottom.%(ext)s" "LINK_DA_METADE_DE_BAIXO"
+ ```
+ 
+-Se for arquivo, copie-o para `work/source.mp4` (e `work/bottom.mp4`); se não for mp4, converta com `ffmpeg -i ARQ -c:v libx264 -c:a aac work/source.mp4`. Se o yt-dlp devolver HTTP 429, espere um pouco e tente de novo; se persistir, peça o arquivo. Se disser que o vídeo tem **restrição de idade** ("Sign in to confirm your age"), peça o arquivo de vídeo ao usuário: **não use os cookies do navegador dele sem ele pedir**.
++Se for arquivo, copie para `work/source.mp4` (e `work/bottom.mp4`); se não for mp4, converta com `ffmpeg -i ARQ -c:v libx264 -c:a aac work/source.mp4`. HTTP 429: espere e tente de novo; se persistir, peça o arquivo. **Restrição de idade** ("Sign in to confirm your age"): peça o arquivo; **não use os cookies do navegador do usuário sem ele pedir**.
++
++Se a origem for um **link do YouTube**, leia também o gráfico "Mais reproduzidos" (sem navegador, pelo yt-dlp):
++
++```bash
++node <motor>/mais-reproduzido.mjs "LINK_DA_ORIGEM" work
++```
++
++Grava `work/heatmap.json` e lista os picos. Sem gráfico (vídeo novo ou com poucas visualizações), siga só pela transcrição.
+ 
+ ## 4. Transcrever
+ 
+ ```bash
+-node ~/.maquina-cortes-gta/engine/scripts/transcribe.mjs work/source.mp4 work pt
++node <motor>/transcribe.mjs work/source.mp4 work pt
+ ```
+ 
+-(Troque `pt` pelo idioma do vídeo. Um 4º argumento opcional limita a transcrição aos primeiros N segundos, útil para testar rápido em vídeo longo; no meu teste, 6 minutos de áudio levaram ~3,5 min com o modelo `small`.) Gera `captions.json` (palavra por palavra), `silences.json` e `meta.json`. Para **ler** a transcrição sem despejar o JSON:
++(Troque `pt` pelo idioma do vídeo. Um 4º argumento opcional limita aos primeiros N segundos, para testar rápido.) Gera `captions.json`, `silences.json` e `meta.json`. Para **ler**:
+ 
+ ```bash
+-node ~/.maquina-cortes-gta/engine/scripts/transcript-text.mjs work
++node <motor>/transcript-text.mjs work                                  # frases "[mm:ss.s] ..."; picos marcados [PICO n]
++node <motor>/transcript-text.mjs work --de 5:10 --ate 6:00             # só um trecho
++node <motor>/transcript-text.mjs work --de 312 --ate 320 --palavras    # cada palavra com o segundo exato
+ ```
+ 
+-Isso imprime linhas `[mm:ss] frase`. Leia em blocos.
++Leia em blocos. Use `--palavras` para acertar o segundo exato do início do gancho e do fim do payoff.
+ 
+-## 5. Analisar os ganchos e escolher os cortes (você faz isso sozinho)
++## 5. Escolher os cortes (você decide sozinho)
+ 
+-O usuário **não escolhe** os trechos. Você lê a transcrição e decide, seguindo `references/ganchos.md`. Resumo:
++O usuário **não escolhe** os trechos. Siga `references/ganchos.md`. Resumo:
+ 
+-1. **Mapeie os assuntos** do vídeo: divida a conversa em blocos por tema e anote o minuto de cada um.
+-2. **Escolha de 3 a 5 cortes** (2 se o vídeo tiver menos de 5 minutos), de **20 a 60 s**, cada um sobre um **assunto diferente** e com um **gancho diferente**. Sem sobreposição de tempo e sem dois cortes abrindo com a mesma ideia.
+-3. **Procure o gancho de cada um** numa frase que já abre uma curiosidade, traz um fato específico (número, nome, comparação com GTA V), um conflito ou uma opinião forte. **Comece o corte nessa frase**, sem "então, galera" nem aquecimento.
+-4. **Termine no payoff**: a frase que responde o gancho, sem deixar a ideia pela metade.
+-5. Dê uma **nota de 0 a 10** a cada gancho (ver o guia) e **descarte** o que ficar abaixo de 6. Se faltar corte bom, entregue menos e diga por quê.
+-6. Se o streamer não estiver no centro da imagem, extraia um quadro (`ffmpeg -ss 5 -i work/source.mp4 -frames:v 1 work/frame.jpg`), olhe e ajuste `focus` (`x` e `y`, de 0 a 100) para o rosto ficar enquadrado na metade de cima.
++1. **Mapa de assuntos:** divida a conversa em blocos por tema, com o minuto de cada um.
++2. **Candidatos:** em cada bloco, ache as frases que abrem uma curiosidade, trazem um fato específico (número, nome, comparação com GTA V), um conflito ou uma opinião forte. Os **picos do "mais reproduzido"** são candidatos fortes: cruze com a transcrição.
++3. **Escolha de 3 a 5 cortes** (2 se o vídeo tiver menos de 5 min), de **20 a 60 s sem pausas**, cada um de um **assunto diferente** e com um **gancho diferente**. Sem sobreposição.
++4. **Comece na frase do gancho** (sem "então, galera") e **termine no payoff** (frase que responde o gancho).
++5. **Nota de 0 a 10** a cada gancho; **descarte** abaixo de 6. Se faltar corte bom, entregue menos e diga por quê.
++6. **Enquadramento:** extraia um quadro (`ffmpeg -ss 5 -i work/source.mp4 -frames:v 1 work/frame.jpg`), olhe e ajuste `focus` (`x`, `y` de 0 a 100) ou `crop` (veja abaixo).
+ 7. Grave `work/cuts.json`:
+ 
+ ```json
+@@ -92,59 +101,72 @@ O usuário **não escolhe** os trechos. Você lê a transcrição e decide, segu
+       "focus": {"x": 50, "y": 35},
+       "assunto": "tamanho do mapa",
+       "hook": "O mapa do GTA 6 é a soma de três mapas.",
+-      "nota": 8
++      "nota": 8,
++      "titulo": "O mapa do GTA 6 é GIGANTE",
++      "turns": [331.0, 344.2],
++      "images": [{"tipo": "comparar", "queries": ["mapa GTA 5", "mapa GTA 6 Leonida"], "labels": ["GTA 5", "GTA 6"], "at": 318.0}]
+     }
+   ]
+ }
+ ```
+ 
+-(`id` com número e assunto; `bottomStart` é opcional e dá um ponto de partida diferente para o vídeo de baixo.)
++`id` = número + assunto. `start` e `end` não precisam ser exatos: o build encaixa o início ~0,15 s antes da 1ª palavra e o fim ~0,25 s depois da última. Opcionais: `bottomStart` (ponto de partida do vídeo de baixo), `ritmo`, `cutEvery`, `final: false`.
+ 
+-**Live com várias câmeras ou tela do jogo ocupando o quadro** (ex.: um react com 4 câmeras pequenas ao lado do jogo): o `focus` sozinho não acha o streamer. Olhe o quadro extraído e adicione `"crop": {"x": 1092, "y": 118, "w": 146, "h": 130}` ao corte, em **pixels do vídeo de origem**, em volta da câmera de quem está falando (proporção ~1,125:1 para preencher a metade de cima). Câmera pequena ampliada fica borrada; avise o usuário e sugira uma origem com o streamer em plano grande.
++8. **Confira antes de renderizar** (obrigatório):
+ 
+-## Cortes rápidos, imagens e efeitos sonoros
++```bash
++node <motor>/conferir-cortes.mjs work
++```
+ 
+-**Cortes (padrão, estilo dos cortes de referência de 12/11):** além de tirar pausas, o `build.mjs` quebra planos longos a cada ~2,8 s, sempre no começo de uma palavra (não remove conteúdo). **Cada quebra é um jump cut seco: muda só o zoom (107% ↔ 100%), sem flash e sem swoosh.** O swoosh (e o flash) é só para **virada de seção**: liste os segundos (do vídeo de origem) em `"turns": [312.8, 331.0]` no corte (3 a 5 por corte): quando o assunto muda, quando entra um b-roll ou quando o streamer cita um console. `"ritmo": "normal"` só tira as pausas; `"ritmo": "rapido"` volta ao estilo antigo (swoosh em todo corte; **não use**, o usuário achou repetitivo). **Pausas:** entre frases, acima de 0,3 s fica em 0,2 s (padrão aprovado pelo usuário no CapCut, 12/11); dentro da frase não mexa.
++Mostra como cada corte abre e fecha, a duração final e os problemas (aquecimento no início, frase sem fechar, gancho fora do começo, sobreposição, nota baixa). Corrija o `cuts.json` até sair "Sem erros"; trate os avisos.
+ 
+-**Menção a console (PlayStation, PS5, PS2, Xbox):** quando o streamer citar, marque o segundo em `turns` e liste uma `image` (ou o vídeo do console, curto, achado e baixado com o Playwright/yt-dlp): swoosh → vídeo/foto do console por ~1–2 s → volta ao ponto onde estava, com a fala e a legenda sem perder a sincronia (exemplo: `Download(14)`).
++**Live com várias câmeras ou tela do jogo ocupando o quadro:** o `focus` sozinho não acha o streamer. Adicione `"crop": {"x": 1092, "y": 118, "w": 146, "h": 130}` em **pixels do vídeo de origem**, em volta da câmera de quem fala (proporção ~1,125:1). Câmera pequena ampliada fica borrada; avise o usuário.
+ 
+-**Escolha do trecho pelo "mais reproduzido":** para live ou vídeo longo do YouTube, use o **Playwright** (e o `agent-reach` para ler a página) para abrir o vídeo e ler o gráfico **"mais reproduzido"** (mapa de calor da barra de tempo). O pico mais alto é candidato a corte (mais retenção e engajamento); cruze com o gancho da transcrição e registre o minuto do pico. Se o gráfico não aparecer, diga e siga só pela transcrição.
++## Ritmo, imagens e efeitos
+ 
+-**Imagens aparecendo (GTA, mapas, prints):** escolha 1 a 3 momentos do corte em que a fala cita algo mostrável (ex.: "mapa", "PS5", um personagem) e liste em `images` no `cuts.json`, com `at` em **segundos do vídeo de origem** e `dur` em segundos:
++**Jump cuts (padrão):** o build quebra planos longos a cada ~2,8 s, sempre no começo de uma palavra (não remove conteúdo). Cada quebra é um **corte seco: só o zoom alterna 100% ↔ 107%**, sem flash e sem swoosh. `"ritmo": "normal"` só tira as pausas; `"cutEvery"` muda o intervalo. (`"ritmo": "rapido"`, com swoosh em todo corte, existe por compatibilidade; fica repetitivo, não use.)
+ 
+-```json
+-"images": [
+-  {"query": "GTA 6 mapa Leonida", "at": 312.8, "dur": 2.2},
+-  {"file": "C:/imagens/ps5.png", "at": 318.0}
+-]
+-```
++**Viradas de seção (`turns`):** segundos do vídeo de origem onde muda o assunto, entra um popup importante ou o streamer cita um console. Só nelas entram **flash, punch-in e swoosh**. Use de 2 a 5 por corte.
++
++**Pausas:** entre frases, pausa acima de 0,3 s fica com 0,2 s. Dentro da frase, só sai hesitação acima de 0,8 s. Ajustável no `config.json` (`pausaMinima`, `pausaFica`, `pausaLongaNaFrase`).
+ 
+-**Popups com imagem real, nunca só texto:** capa/arte do jogo quando falar o nome dele (ex.: "GTA 6"), **logo com fundo transparente vindo em direção à tela** quando o jogo é citado pela primeira vez, **ícone da Rockstar quando disser "Rockstar"**, mapa/aérea quando falar de mapa, personagem quando falar dele; para comparar, **dois mapas lado a lado** ("GTA 5" e "GTA 6"). Sem as chaves do Google, use arquivos do usuário ou arte oficial baixada (o Google bloqueia a pesquisa de imagens por navegador automático). A imagem entra na metade de baixo com animação e um pop. `file` usa uma imagem do usuário. `query` busca no **Google** pela API oficial (Custom Search) e baixa a primeira imagem que servir; precisa das variáveis `GOOGLE_API_KEY` e `GOOGLE_CSE_ID` do usuário (gratuito até 100 buscas por dia; veja o cabeçalho de `template/scripts/buscar-imagens.mjs`). Sem elas, a imagem é pulada com um aviso: peça arquivos ao usuário. Prefira buscas que tragam material oficial (trailer, arte de divulgação).
++**Popups (`images`):** 1 a 3 por corte, com `at` em **segundos do vídeo de origem**, sempre com imagem real (nunca só texto). Tipos:
+ 
+-**Efeitos sonoros (whoosh, impacto, pop):** ficam em `~/.maquina-cortes-gta/sfx/` e o `build.mjs` os usa sozinho: impacto no quadro 0, **whoosh só nas viradas de seção (`turns`)**, pop em cada popup de imagem, **menos de 15 efeitos por 35 s**, bem abaixo da voz (mix final ≈ −14 LUFS) (`sfxGain` no `config.json`, padrão 0,6). Se `efeitosGerados` for 0, **pergunte uma vez** se o usuário quer gerar (usa créditos da conta ElevenLabs dele, 3 efeitos curtos) e, só com o OK, rode:
++| `tipo` | Quando usar | Campos |
++|---|---|---|
++| `foto` (padrão) | capa/arte do jogo, mapa, personagem, console | `file` ou `query`, `dur` (2,2 s) |
++| `logo` | 1ª menção do jogo ou "Rockstar": logo **com fundo transparente** vindo em direção à tela, sobre o streamer | `file` (PNG transparente), `dur` |
++| `comparar` | comparação lado a lado ("GTA 5 \| GTA 6") | `files` ou `queries` (2), `labels`, `dur` (3 s) |
++
++`onde: "cima" | "baixo"` muda a metade (padrão: `logo` em cima, o resto embaixo). `query` busca no Google pela API oficial (precisa de `GOOGLE_API_KEY` e `GOOGLE_CSE_ID`); sem elas, a imagem é pulada com aviso. Prefira material oficial. Mapa feito por fã leva a observação "não oficial" no título; **não use mapa vazado**.
++
++**Efeitos sonoros:** em `~/.maquina-cortes-gta/sfx/`. Impacto no quadro 0, whoosh nas viradas, pop em cada popup, clique no "Seguir" (usa `clique` ou, sem ele, `pop`). O build limita a menos de 15 efeitos por 35 s (sobrando, tira whooshes). Volume em `sfxGain` no `config.json` (padrão 0,6). Se `efeitosGerados` for 0, **pergunte uma vez** se o usuário quer gerar e, só com o OK:
+ 
+ ```bash
+ node "<skill>/scripts/gerar-paleta-sfx.mjs"
+ ```
+ 
+-Isso usa a skill `sound-effects` (glebis, MIT) que vem junto no repositório e a variável `ELEVENLABS_API_KEY`. Nunca peça nem escreva a chave no chat. Sem efeitos gerados, o corte sai mudo de efeitos.
++Usa a skill `sound-effects` (glebis, MIT) que vem junto e a variável `ELEVENLABS_API_KEY`. Nunca peça nem escreva a chave no chat.
++
++**Final "Seguir → Seguindo":** automático nos últimos 3 s de cortes com 8 s ou mais: pílula com a logo e o nome, um cursor clica em "Seguir" e vira "Seguindo ✓". Desliga com `"final": false` no corte ou `"finalSeguir": false` no `config.json`.
+ 
+ ## 6. Renderizar
+ 
+ ```bash
+-node ~/.maquina-cortes-gta/engine/scripts/build.mjs work .
++node <motor>/build.mjs work .
++node <motor>/build.mjs work . 02-pre-download     # só um corte (ex.: refazer o que falhou)
+ ```
+ 
+-O `build.mjs` tira as pausas longas, refaz as legendas na nova linha do tempo e renderiza cada corte com o Remotion em `./01-....mp4`, `./02-....mp4` etc. (1080×1920, 30 fps, H.264). O **primeiro render** pode baixar o Chrome headless do Remotion. Se algum corte falhar, mostre o erro e renderize os outros.
++Gera `./01-....mp4` etc. (1080×1920, 30 fps, H.264). O **primeiro render** pode baixar o Chrome headless do Remotion. Se um corte falhar, mostre o erro e renderize os outros.
+ 
+ ## 7. Entregar
+ 
+-Responda curto: a lista dos arquivos gerados e uma tabela com **assunto, gancho (a frase), duração e nota** de cada corte, mais um **título curto sugerido** por corte. Nada além disso.
++Responda curto: a lista dos arquivos e uma tabela com **assunto, gancho (a frase), duração, nota e título sugerido** de cada corte. Nada além disso.
+ 
+ ## Regras
+ 
+-- **Estilo de referência (12/11/2026, ver `references/estilo-referencias.md`):** corte seco sem swoosh; swoosh só em virada de seção e junto de popups; popups com imagem real; pausas ≤ 0,2 s; **final "Seguir → Seguindo"** (animação de seguir, reutilizável) nos últimos ~3 s.
+-- Estilo fixo: metade de cima o streamer (corte com zoom nos cortes), metade de baixo o vídeo; legenda palavra por palavra na divisa, caixa alta, palavra falada em amarelo; marca d'água no canto superior direito. Detalhes em `references/estilo-metade-metade.md`.
++- Estilo: metade de cima o streamer (jump cuts com zoom), metade de baixo o vídeo; legenda palavra por palavra na divisa, caixa alta, palavra falada em amarelo; marca d'água no canto superior direito; final "Seguir". Detalhes em `references/estilo-metade-metade.md` e `references/estilo-referencias.md`.
+ - Não mude a marca d'água nem peça a logo de novo depois da primeira vez.
+ - Cada execução é independente: não reaproveite `cuts.json` de outro vídeo.
++- Não invente fala: a legenda é o que a pessoa disse.
+ - Se algo falhar, veja `references/problemas.md`.
+diff --git a/skills/maquina-cortes-gta/references/estilo-metade-metade.md b/skills/maquina-cortes-gta/references/estilo-metade-metade.md
+index c88e4fd..e143d17 100644
+--- a/skills/maquina-cortes-gta/references/estilo-metade-metade.md
++++ b/skills/maquina-cortes-gta/references/estilo-metade-metade.md
+@@ -1,31 +1,45 @@
+ # Estilo "metade streamer, metade vídeo"
+ 
+-O visual é fixo (está em `template/src/SplitCut.jsx`). Este arquivo diz o que cada parte faz e o que o usuário pode pedir para mudar.
++O visual está em `template/src/SplitCut.jsx`. Este arquivo diz o que cada parte faz e o que dá para mudar.
+ 
+ ## Layout (1080×1920, 30 fps)
+ 
+ | Região | O que tem |
+ |---|---|
+-| **Metade de cima** (0–960 px) | O vídeo de origem (o streamer), cortado para preencher a metade (`object-fit: cover`). O enquadramento vem de `focus` (`x` e `y`, de 0 a 100): `{"x": 50, "y": 35}` centraliza o rosto um pouco acima do meio. |
++| **Metade de cima** (0–960 px) | O vídeo de origem (o streamer), cortado para preencher a metade. Enquadramento por `focus` (`x`, `y` de 0 a 100; padrão `50, 35`) ou por `crop` (região em pixels da origem). |
+ | **Metade de baixo** (960–1920 px) | O segundo vídeo (gameplay, trailer ou B-roll), mudo, em loop se for mais curto que o corte. Cada corte começa num ponto diferente dele. |
+ | **Divisa** (y = 960) | Degradê escuro de ~340 px e a **legenda** por cima. |
+-| **Canto superior direito** (topo 150 px, margem 40 px) | **Marca d'água:** logo em corte circular à esquerda e o nome do perfil ao lado. |
++| **Canto superior direito** (topo 150 px, margem 40 px) | **Marca d'água:** logo circular e o nome do perfil ao lado. |
++| **Últimos 3 s** (metade de baixo) | **Final "Seguir → Seguindo"**: pílula branca com a logo e o nome; o cursor clica em "Seguir" (laranja) aos ~1,25 s e ele vira "Seguindo ✓". |
+ 
+ ## Legenda
+ 
+-- Palavra por palavra, **1 a 3 palavras** por vez (até ~20 caracteres, quebra em pausa maior que 0,6 s e em fim de frase).
+-- Caixa alta, fonte Montserrat Black, 96 px, branca com contorno preto; a **palavra que está sendo falada fica amarela** (`#FFD400`).
+-- O texto é o que foi falado (whisper.cpp); só muda a caixa. Pontuação final de vírgula/ponto e vírgula é removida.
++- Palavra por palavra, **1 a 3 palavras** por vez (até ~20 letras; quebra em pausa maior que 0,6 s e em fim de frase).
++- Caixa alta, Montserrat Black, 96 px, branca com contorno preto. A **palavra falada fica amarela** (`#FFD400`) e cresce um pouco ao entrar; entre uma palavra e outra, a última dita continua acesa.
++- O texto é o que foi falado (whisper.cpp); só muda a caixa. Vírgula e ponto e vírgula no fim da palavra saem.
+ 
+ ## Cortes e ritmo
+ 
+-- **Pausas longas saem:** silêncio acima de 0,5 s é removido (guarda 0,12 s de respiro em cada ponta; trecho resultante menor que 0,3 s é descartado).
+-- **Zoom a cada corte:** o 1º plano começa com zoom de 114% e assenta em 100% em 9 quadros; os planos ímpares dão um punch-in de 107%; os pares ficam em 100%.
+-- A fala do streamer é o áudio do corte; o vídeo de baixo não tem áudio.
++- **Início e fim** encaixados nas palavras: ~0,15 s antes da 1ª, ~0,25 s depois da última.
++- **Pausas:** entre frases, acima de 0,3 s fica com 0,2 s. Dentro da frase, só sai hesitação acima de 0,8 s. Nenhum trecho com fala é descartado.
++- **Jump cuts:** a cada ~2,8 s, no começo de uma palavra. O zoom alterna entre 100% e 107%, seco. O 1º plano entra com um punch-in curto.
++- **Viradas de seção (`turns`):** punch-in, flash branco curto e swoosh.
++- A fala do streamer é o áudio do corte; o vídeo de baixo não tem som.
+ 
+-## O que o usuário pode pedir
++## Popups
+ 
+-- **Enquadrar o rosto:** ajuste `focus` no `cuts.json` (olhe um quadro antes: `ffmpeg -ss 5 -i work/source.mp4 -frames:v 1 work/frame.jpg`).
+-- **Outro vídeo embaixo:** troque `work/bottom.mp4` e rode o `build.mjs` de novo.
+-- **Cor da palavra, tamanho da legenda, posição da marca d'água:** edite as constantes no topo de `SplitCut.jsx` em `~/.maquina-cortes-gta/engine/src/` (`YELLOW`, `fontSize`, `top`/`right` do `Watermark`). O `setup.mjs` sobrescreve `src/` do motor a cada execução, então para mudanças permanentes edite `template/src/` da skill.
+-- **Pausas mais ou menos agressivas:** `minSilence` e `pad` em `segmentsFor()` no `build.mjs`.
++- `foto`: cartão com borda branca, entra com escala 0,9 → 1 e balanço; sai com fade.
++- `logo`: PNG transparente, sem cartão, vem de 0,35× até 1× acelerando e sai passando da tela (1,6×).
++- `comparar`: duas imagens lado a lado com rótulo embaixo; a 2ª entra logo depois da 1ª.
++
++## O que o usuário pode pedir (config.json em `~/.maquina-cortes-gta`)
++
++| Pedido | Chave |
++|---|---|
++| Outra cor da palavra falada | `"corPalavra": "#C6FF00"` |
++| Efeitos mais altos ou mais baixos | `"sfxGain": 0.6` |
++| Pausas mais ou menos agressivas | `"pausaMinima"`, `"pausaFica"`, `"pausaLongaNaFrase"` (segundos) |
++| Sem o final "Seguir" | `"finalSeguir": false` |
++| Live com música por baixo (pausas não são achadas) | `"silencioDb": -28` (depois transcreva de novo) |
++
++Outras mudanças (tamanho da legenda, posição da marca d'água): edite `template/src/SplitCut.jsx` da skill e rode o `setup.mjs`, que leva a mudança para o motor.
+diff --git a/skills/maquina-cortes-gta/references/estilo-referencias.md b/skills/maquina-cortes-gta/references/estilo-referencias.md
+index c4e2750..15a71b7 100644
+--- a/skills/maquina-cortes-gta/references/estilo-referencias.md
++++ b/skills/maquina-cortes-gta/references/estilo-referencias.md
+@@ -1,30 +1,31 @@
+-# Estilo de referência dos cortes (dissecado em 12/11/2026)
++# Estilo de referência dos cortes
+ 
+-Resumo do que o usuário pediu depois de analisar três vídeos de referência (`Download(12)` narração com imagens, `Download(13)` e `Download(14)` cortes de streamer) e a edição dele no CapCut. Medido com ffmpeg (cortes de cena, loudness, espectrograma). O que **já está no template** e o que é **meta** (ainda manual ou a implementar) vem marcado.
++Resumo de três vídeos de referência (um de narração com imagens e dois cortes de streamer), medidos com ffmpeg (cortes de cena, loudness). Cada item diz se **já está no template** ou se ainda é **manual**.
+ 
+-## Base do corte de streamer (Ref. B e C)
+-- Streamer em plano fechado e **tela cheia**, com jump cuts de ~1,5–2,7 s por plano (zoom 100% ↔ 120%). **Sem swoosh nos jump cuts.** *(Template: jump cut + zoom, sem flash/swoosh. Feito.)*
+-- **Três layouts alternando conforme a fala:** (1) streamer em tela cheia; (2) **b-roll do jogo em tela cheia** quando ele descreve algo; (3) **tela dividida** (jogo em cima/streamer embaixo ou o contrário), legenda na divisa. *(Template: só metade/metade. Meta: alternar com `turns`.)*
+-- **Legenda por frase** (3–6 palavras, 1–2 linhas), maiúscula, **amarelo-limão** com contorno preto, troca a cada ~1,5 s; no terço inferior (ou na divisa quando dividido). *(Template: palavra por palavra, 1–3 palavras, amarelo `#FFD400`. Meta: opção de frase amarelo-limão.)*
+-- Marca do canal pequena no canto; nada mais fixo na tela. *(Feito: marca d'água.)*
++## Base do corte de streamer
++- Jump cuts de ~1,5–2,8 s por plano, só com mudança de zoom, **sem swoosh**. *(Template: sim.)*
++- Legenda grande na divisa, caixa alta, palavra em destaque. *(Template: sim; a cor muda com `corPalavra`. Legenda por frase inteira ainda não existe.)*
++- Marca do canal pequena no canto e nada mais fixo na tela. *(Template: sim.)*
++- **Três layouts alternando conforme a fala** (streamer em tela cheia, b-roll em tela cheia, tela dividida). *(Template: só tela dividida. Manual.)*
+ 
+-## Virada de seção = swoosh (zoom blur)
+-- Só em mudança de assunto, entrada de b-roll ou menção a um console. **Menção a PlayStation/PS5/PS2:** swoosh → vídeo do console ~1–2 s → cartão com a capa do jogo citado (opcional) → volta ao ponto onde estava. *(Template: `turns` + `images`.)*
+-- **Popup do logo do jogo** sobre o streamer quando ele cita o GTA 6.
++## Virada de seção = swoosh
++- Só em mudança de assunto, entrada de popup importante ou menção a um console. *(Template: `turns`.)*
++- **Menção a PlayStation/PS5/Xbox:** marque o segundo em `turns` e ponha uma `foto` do console por ~1,5 s. *(Template: sim.)*
++- **Logo do jogo sobre o streamer** na 1ª menção ao GTA 6. *(Template: `tipo: "logo"`, PNG transparente.)*
+ 
+-## Popups com imagem real (vale para narração e cortes)
+-Capa/arte oficial ao falar "GTA 6"; **logo transparente vindo em direção à tela** (zoom 0,35× → 1,6× com aceleração); **ícone da Rockstar** ao dizer "Rockstar"; mapas/aéreas ao falar de mapa; capas de GTA 5, GTA 4 e Red Dead 2 ao citá-los (sem escrever "3× maior que..." na tela: a legenda basta); **comparação "GTA 5 | GTA 6" com os dois mapas lado a lado**. Imagem buscada e salva com o **Playwright**. Mapa não oficial de fãs leva tarja "não oficial"; **não usar mapa vazado**.
++## Popups com imagem real
++Capa/arte oficial ao falar o nome do jogo; ícone da Rockstar ao dizer "Rockstar"; mapa ao falar de mapa; capas de GTA 5, GTA 4 e Red Dead 2 ao citá-los, sem escrever "3× maior" na tela (a legenda basta); comparação **"GTA 5 | GTA 6" com os dois mapas lado a lado** *(template: `tipo: "comparar"`)*. Não usar mapa vazado.
+ 
+ ## Som
+-- Voz na frente. Sem música (ou ≈ −33 LUFS). **Poucos efeitos:** impacto no quadro 0 e em 1–2 viradas, swoosh nas viradas, pop em cada popup, ding no payoff; **menos de 15 por 35 s**.
+-- Mix final ≈ **−14 LUFS**, pico ≤ −1 dBTP (as referências variam de −8,7 a −17 LUFS; −8,7 estoura).
++- Voz na frente. Sem música (ou bem baixa, ≈ −33 LUFS).
++- **Poucos efeitos:** impacto no quadro 0, swoosh nas viradas, pop em cada popup; **menos de 15 por 35 s**. *(Template: sim, com limite automático.)*
++- Mix final ≈ **−14 LUFS**, pico ≤ −1 dBTP. *(Ainda manual: normalize depois com `ffmpeg -i corte.mp4 -af loudnorm=I=-14:TP=-1 -c:v copy saida.mp4`.)*
+ 
+ ## Ritmo e silêncio
+-- **Pausa entre frases > 0,3 s vira 0,2 s** (padrão da edição do usuário no CapCut: ~0,9 s a menos em ~29 s). Pausa dentro da frase fica.
+-- Velocidade da narração (só vídeos de narração, não os cortes): **1,2×**.
++- **Pausa entre frases > 0,3 s vira 0,2 s**; pausa dentro da frase fica. *(Template: sim.)*
+ 
+-## Final (todos os vídeos)
+-**Animação "Seguir → Seguindo"** nos últimos ~3 s: pílula branca com o avatar e o **nome do canal (sem @)**, um cursor clica no botão laranja "Seguir" e ele vira "Seguindo ✓". Versões reutilizáveis: com transparência (ProRes 4444) e em tela verde (chroma key `#00FF00`). *(Gerador no projeto Portal GTA 6: `ferramentas/outro_seguir.py`; aqui, sobrepor nos últimos 3 s.)*
++## Final
++**"Seguir → Seguindo"** nos últimos ~3 s, com a logo e o nome do canal (sem @). *(Template: sim.)*
+ 
+ ## Escolha do trecho
+-Para live/vídeo longo: Playwright + agent-reach leem o gráfico **"mais reproduzido"** e o corte sai do pico (registrar o minuto).
++Para vídeo do YouTube, o pico do gráfico **"Mais reproduzidos"** é candidato forte. *(Template: `mais-reproduzido.mjs`, pelo yt-dlp, sem navegador.)*
+diff --git a/skills/maquina-cortes-gta/references/ganchos.md b/skills/maquina-cortes-gta/references/ganchos.md
+index 1cd73b8..92d264f 100644
+--- a/skills/maquina-cortes-gta/references/ganchos.md
++++ b/skills/maquina-cortes-gta/references/ganchos.md
+@@ -1,35 +1,44 @@
+ # Como escolher os cortes pelo gancho
+ 
+-Você tem só a transcrição (palavras com tempo). Escolha por **o que a frase faz com quem ouve**, não pelo assunto em si.
++Você tem a transcrição (palavras com tempo) e, às vezes, os picos do "mais reproduzido". Escolha por **o que a frase faz com quem ouve**, não pelo assunto em si. Quem rola o feed decide em ~2 s se fica.
+ 
+-## O que torna uma frase um bom gancho (nota 0 a 10)
++## Processo em 4 passos
++
++1. **Mapa de assuntos.** Leia a transcrição inteira em blocos e anote: `[minuto] assunto: frase mais forte do bloco`.
++2. **Candidatos.** Para cada bloco, separe até 2 frases que poderiam abrir um corte. Os trechos marcados `[PICO n]` entram sempre como candidatos: o público já mostrou que volta neles.
++3. **Nota.** Dê a nota (tabela abaixo) a cada candidato. Para cada um, ache o **payoff** (a frase que responde o gancho). Sem payoff dentro de ~60 s, descarte.
++4. **Seleção.** Fique com os 3 a 5 de maior nota, um por assunto, sem dois ganchos parecidos. Rode `conferir-cortes.mjs` e corrija.
+ 
+-Some pontos, sem passar de 10:
++## O que torna uma frase um bom gancho (nota 0 a 10)
+ 
+ | Critério | Pontos | Como reconhecer na transcrição |
+ |---|---:|---|
+-| **Abre uma lacuna** de curiosidade | 0–3 | A frase levanta uma pergunta ou tensão que só o resto do corte responde ("o erro que quase todo mundo vai cometer…", "isso aqui muda tudo…"). Vale mais quando não entrega a resposta de cara. |
++| **Abre uma lacuna** de curiosidade | 0–3 | Levanta uma pergunta ou tensão que só o resto do corte responde ("o erro que quase todo mundo vai cometer…"). Vale mais quando não entrega a resposta de cara. |
+ | **Fato específico** | 0–2 | Número, nome, data, comparação ("35 minutos", "a soma do GTA 4, GTA 5 e Red Dead 2"). |
+ | **Conflito ou opinião forte** | 0–2 | Discorda, reclama, se surpreende, dá um veredito. |
+-| **Entra direto** | 0–1 | A 1ª frase já é o ponto. Sem "então, galera", "bom, vamos lá", "voltando ao assunto". |
+-| **Tem payoff dentro do corte** | 0–1 | A resposta ou a conclusão chega antes de acabar. |
+-| **Se entende sozinho** | 0–1 | Quem não viu o resto do vídeo entende do que se fala em 5 s. |
++| **Entra direto** | 0–1 | A 1ª frase já é o ponto. Sem "então, galera", "bom, vamos lá". |
++| **Tem payoff dentro do corte** | 0–1 | A resposta chega antes de acabar. |
++| **Se entende sozinho** | 0–1 | Quem não viu o resto entende do que se fala em 5 s. |
++
++- **9–10:** gancho forte. **6–8:** bom. **Abaixo de 6:** descarte, mesmo com assunto bom.
++- **Bônus de desempate:** o trecho cai num pico do "mais reproduzido".
++- **Penalize:** promessa que o corte não cumpre; trecho que depende de contexto anterior ("como eu falei", "isso aí que ele disse"); piada interna; pronome sem referência na 1ª frase ("ele", "isso") quando o nome só vem depois.
+ 
+-- **9–10:** gancho forte, use. **6–8:** bom. **Abaixo de 6:** descarte, mesmo que o assunto seja bom.
+-- Penalize: promessa que o corte não cumpre; trecho que só faz sentido com contexto anterior; piada interna.
++## Teste dos 2 segundos
++
++Leia só as **primeiras 5 a 7 palavras** do corte (o `conferir-cortes.mjs` mostra). Se elas sozinhas não dão vontade de ouvir o resto, o corte começa no lugar errado. Às vezes o gancho está **uma frase depois** do que parecia: a reação ("Mano, não acredito") vem antes, e a frase forte vem logo em seguida.
+ 
+ ## Assuntos e ganchos diferentes
+ 
+-- Faça primeiro um **mapa de assuntos** (um por bloco temático do vídeo). Cada corte sai de **um bloco diferente**.
++- Cada corte sai de **um bloco diferente** do mapa de assuntos.
+ - Dois cortes **não** abrem com a mesma ideia nem com a mesma estrutura de frase. Se dois ganchos forem parecidos, fique com o de maior nota.
+-- Espalhe os cortes ao longo do vídeo; evite tirar tudo do mesmo minuto.
++- Espalhe os cortes ao longo do vídeo.
+ 
+ ## Onde começar e terminar
+ 
+-- **Início:** no começo da frase de gancho (use o tempo da primeira palavra, e recue ~0,2 s). Corte o aquecimento antes dela.
+-- **Fim:** no fim da frase que fecha o raciocínio (payoff), até ~0,3 s depois da última palavra. Não deixe frase pela metade nem "né?" solto.
+-- **Duração:** 20 a 60 s. Abaixo de 20 s costuma não ter payoff; acima de 60 s perde ritmo (mas um assunto excelente pode chegar a ~75 s).
+-- Não corte no meio de uma palavra; use os tempos de `captions.json`.
++- **Início:** o segundo da 1ª palavra do gancho (veja com `transcript-text.mjs --palavras`). O build já recua ~0,15 s.
++- **Fim:** a última palavra do payoff. O build já estica ~0,25 s. Não deixe frase pela metade nem "né?" solto.
++- **Duração final (sem pausas):** 20 a 60 s. Um assunto excelente pode chegar a ~75 s.
+ 
+ ## Formatos de gancho que funcionam bem em corte de conversa
+ 
+@@ -39,8 +48,12 @@ Some pontos, sem passar de 10:
+ - **Reação forte ao vivo:** quando a pessoa se surpreende ou discorda, a frase seguinte costuma ser o gancho.
+ - **Número ou nome na primeira frase.**
+ 
++## Título sugerido
++
++Um por corte, até ~40 caracteres, com o fato ou a tensão do gancho, sem entregar o payoff e sem prometer o que o corte não mostra. Grave em `"titulo"` no `cuts.json`.
++
+ ## O que NÃO fazer
+ 
+ - Não escolha o trecho só porque é engraçado fora de contexto.
+-- Não invente gancho: o texto da legenda é o que a pessoa falou.
++- Não invente gancho: a legenda é o que a pessoa falou.
+ - Não mude o sentido ao encurtar; as pausas são removidas, as frases não.
+diff --git a/skills/maquina-cortes-gta/references/problemas.md b/skills/maquina-cortes-gta/references/problemas.md
+index 179d43a..f9a5801 100644
+--- a/skills/maquina-cortes-gta/references/problemas.md
++++ b/skills/maquina-cortes-gta/references/problemas.md
+@@ -6,8 +6,7 @@
+ | `ytdlp: false` | yt-dlp não instalado | Windows: `winget install yt-dlp` · macOS: `brew install yt-dlp` · Linux: `pipx install yt-dlp`. Sem ele, só vale arquivo de vídeo. |
+ | yt-dlp: `HTTP Error 429` | O YouTube limitou as requisições | Espere alguns minutos e tente de novo. Se continuar, peça o arquivo de vídeo. |
+ | yt-dlp: `Sign in to confirm your age` | Vídeo com restrição de idade | Baixe o vídeo no navegador (logado) e passe o arquivo para a skill. Usar `--cookies-from-browser` dá acesso ao seu login: só faça se você quiser. |
+-| As pausas não foram cortadas | A live tem música ou som de jogo por baixo, então nada fica abaixo de -35 dB | Normal em live e react. Ajuste o limiar em `silencedetect=noise=-35dB` no `transcribe.mjs` (ex.: `-28dB`) ou corte as pausas pela transcrição. Gagueira e "é..." não são cortados. |
+-| O render falha com caminho que tem espaço | (corrigido) versões antigas chamavam o Remotion por um shell | Atualize a skill; o `build.mjs` agora chama o CLI direto pelo Node. |
++| As pausas não foram cortadas | A live tem música ou som de jogo por baixo, então nada fica abaixo de -35 dB | Normal em live e react. Ponha `"silencioDb": -28` no `config.json` e transcreva de novo. Gagueira e "é..." não são cortados. |
+ | Câmera do streamer borrada | Origem em 720p e câmera pequena (live com várias câmeras) | Use uma origem com o streamer em plano grande, ou baixe em resolução maior. |
+ | yt-dlp: `Requested format is not available` | O vídeo não tem formato combinado | Use `-f "bv*+ba/b"` com `--merge-output-format mp4` (como no `SKILL.md`). Não filtre por `height`: em vídeo vertical a altura é a maior medida. |
+ | `npm install` falha | Sem internet ou versão antiga do Node | Use Node 18+ (de preferência 22+) e rode `node scripts/setup.mjs` de novo. |
+@@ -18,3 +17,8 @@
+ | Rosto cortado na metade de cima | Streamer fora do centro | Ajuste `focus` no `cuts.json`. |
+ | O render demora | Remotion renderiza no seu computador | É normal; o 1º render também baixa o Chrome headless. |
+ | Corte sem som da pessoa | O arquivo de origem não tem áudio | Confira com `ffprobe -show_streams work/source.mp4`. |
++| `motorAtualizado: false` no `--check` | A skill foi atualizada e o motor ainda tem os scripts antigos | Rode `node <skill>/scripts/setup.mjs` (só copia os arquivos novos; reinstala dependências se mudaram). |
++| `mais-reproduzido.mjs` diz que não há gráfico | Vídeo novo ou com poucas visualizações; o YouTube não mostra o gráfico | Siga só pela transcrição. |
++| `conferir-cortes.mjs` aponta "gancho não está no começo" | O `start` está antes ou depois da frase do gancho | Veja o segundo exato com `transcript-text.mjs --de X --ate Y --palavras` e ajuste o `start`. |
++| Imagem ignorada no build | Arquivo não existe, a busca não trouxe nada ou a imagem cai depois do fim do corte (pausas removidas encurtam o corte) | Confira o caminho e o `at` (em segundos do vídeo de origem). |
++| Um corte falhou e os outros não | Erro só naquele corte | Refaça só ele: `node <motor>/build.mjs work . ID_DO_CORTE`. |
+diff --git a/skills/maquina-cortes-gta/scripts/setup.mjs b/skills/maquina-cortes-gta/scripts/setup.mjs
+index 8eed9e7..506b28d 100644
+--- a/skills/maquina-cortes-gta/scripts/setup.mjs
++++ b/skills/maquina-cortes-gta/scripts/setup.mjs
+@@ -9,6 +9,7 @@
+ // Tudo fica em ~/.maquina-cortes-gta (motor, whisper, config, logo). Nada é instalado fora dessa pasta,
+ // a não ser o que você já tem (Node, ffmpeg, yt-dlp), que o script só confere.
+ import {execFileSync, execSync, spawnSync} from 'node:child_process';
++import crypto from 'node:crypto';
+ import fs from 'node:fs';
+ import os from 'node:os';
+ import path from 'node:path';
+@@ -45,6 +46,30 @@ const which = (bin) => {
+ };
+ const nodeMajor = Number(process.versions.node.split('.')[0]);
+ 
++// Impressão digital do motor (src, scripts e package.json do template). Muda quando a skill é atualizada.
++const STAMP = path.join(ENGINE, '.versao-template');
++function templateHash() {
++  const h = crypto.createHash('sha1');
++  const walk = (d) => {
++    for (const f of fs.readdirSync(d).sort()) {
++      const p = path.join(d, f);
++      if (fs.statSync(p).isDirectory()) walk(p);
++      else h.update(path.relative(TEMPLATE, p)).update(fs.readFileSync(p));
++    }
++  };
++  walk(path.join(TEMPLATE, 'src'));
++  walk(path.join(TEMPLATE, 'scripts'));
++  h.update(fs.readFileSync(path.join(TEMPLATE, 'package.json')));
++  return h.digest('hex').slice(0, 12);
++}
++const engineUpToDate = () => {
++  try {
++    return fs.readFileSync(STAMP, 'utf8').trim() === templateHash();
++  } catch {
++    return false;
++  }
++};
++
+ function status() {
+   const c = readConfig();
+   const model = c.whisperModel || 'small';
+@@ -60,6 +85,7 @@ function status() {
+     googleImagens: !!(process.env.GOOGLE_API_KEY && process.env.GOOGLE_CSE_ID),
+     efeitosGerados: fs.existsSync(path.join(HOME, 'sfx')) ? fs.readdirSync(path.join(HOME, 'sfx')).filter((f) => /\.(mp3|wav)$/.test(f)).length : 0,
+     engine: fs.existsSync(path.join(ENGINE, 'node_modules', 'remotion')),
++    motorAtualizado: engineUpToDate(),
+     whisperModel: fs.existsSync(path.join(WHISPER, `ggml-${model}.bin`)),
+     perfilConfigurado: !!(c.profileName && c.logo && fs.existsSync(path.join(HOME, c.logo))),
+     config: c,
+@@ -125,12 +151,21 @@ if (!s0.engine) {
+   } catch {
+     console.warn('Não consegui pré-baixar o Chrome; o Remotion tenta de novo no primeiro render.');
+   }
+-} else {
+-  // mantém scripts e componentes atualizados sem mexer em node_modules
++} else if (!engineUpToDate()) {
++  // skill atualizada: copia componentes e scripts; se as dependências mudaram, reinstala
++  console.log('> Atualizando o motor com a versão nova da skill');
+   for (const d of ['src', 'scripts']) {
+     fs.cpSync(path.join(TEMPLATE, d), path.join(ENGINE, d), {recursive: true});
+   }
++  const oldPkg = fs.existsSync(path.join(ENGINE, 'package.json')) ? fs.readFileSync(path.join(ENGINE, 'package.json'), 'utf8') : '';
++  const newPkg = fs.readFileSync(path.join(TEMPLATE, 'package.json'), 'utf8');
++  if (oldPkg !== newPkg) {
++    fs.writeFileSync(path.join(ENGINE, 'package.json'), newPkg);
++    console.log('> As dependências mudaram: npm install');
++    execSync('npm install --no-audit --no-fund', {cwd: ENGINE, stdio: 'inherit'});
++  }
+ }
++fs.writeFileSync(STAMP, templateHash());
+ 
+ // whisper.cpp + modelo
+ if (!status().whisperModel) {
+@@ -140,8 +175,14 @@ if (!status().whisperModel) {
+     await installWhisperCpp({to: ${JSON.stringify(WHISPER)}, version: ${JSON.stringify(WHISPER_VERSION)}});
+     await downloadWhisperModel({model: ${JSON.stringify(cfg.whisperModel)}, folder: ${JSON.stringify(WHISPER)}});
+   `;
+-  fs.writeFileSync(path.join(ENGINE, 'scripts', '_install-whisper.mjs'), code);
+-  execFileSync(process.execPath, [path.join(ENGINE, 'scripts', '_install-whisper.mjs')], {cwd: ENGINE, stdio: 'inherit'});
++  // fica na raiz do motor (não em scripts/) para não alterar a impressão digital nem ser sobrescrito
++  const tmp = path.join(ENGINE, '_install-whisper.mjs');
++  fs.writeFileSync(tmp, code);
++  try {
++    execFileSync(process.execPath, [tmp], {cwd: ENGINE, stdio: 'inherit'});
++  } finally {
++    fs.rmSync(tmp, {force: true});
++  }
+ }
+ 
+ console.log(JSON.stringify(status(), null, 2));
+diff --git a/skills/maquina-cortes-gta/template/scripts/build.mjs b/skills/maquina-cortes-gta/template/scripts/build.mjs
+index 43865bb..814682b 100644
+--- a/skills/maquina-cortes-gta/template/scripts/build.mjs
++++ b/skills/maquina-cortes-gta/template/scripts/build.mjs
+@@ -1,25 +1,47 @@
+ #!/usr/bin/env node
+-// Monta e renderiza os cortes: tira as pausas, ajusta as legendas à nova linha do tempo e roda o Remotion.
+-// Uso: node scripts/build.mjs <pasta_de_trabalho> <pasta_de_saida>
+-// A pasta de trabalho precisa ter: source.mp4, bottom.mp4, captions.json, silences.json, cuts.json
+-// (e a logo é copiada da config). cuts.json:
+-//   { "clips": [ { "id": "01-gancho", "start": 12.4, "end": 51.0,
+-//                  "focus": {"x": 50, "y": 35}, "bottomStart": 0 } ] }
++// Monta e renderiza os cortes: encaixa início e fim nas palavras, tira as pausas, ajusta as legendas à nova
++// linha do tempo e roda o Remotion.
++// Uso: node scripts/build.mjs <pasta_de_trabalho> <pasta_de_saida> [id_do_corte ...]
++// A pasta de trabalho precisa ter: source.mp4, bottom.mp4, captions.json, silences.json, meta.json, cuts.json.
++// Passe ids no fim para renderizar só alguns cortes (ex.: refazer um que falhou).
+ import {execFileSync, spawnSync} from 'node:child_process';
+ import fs from 'node:fs';
+ import os from 'node:os';
+ import path from 'node:path';
+ import {searchImages} from './buscar-imagens.mjs';
++import {applyTurns, makePages, mapTimeline, remapWords, segmentsFor, snapClip, splitSegs, toOut} from './timeline.mjs';
+ 
+-const [work, outDir] = process.argv.slice(2);
++const [work, outDir, ...only] = process.argv.slice(2);
+ if (!work || !outDir) {
+-  console.error('Uso: node scripts/build.mjs <pasta_de_trabalho> <pasta_de_saida>');
++  console.error('Uso: node scripts/build.mjs <pasta_de_trabalho> <pasta_de_saida> [id_do_corte ...]');
+   process.exit(1);
+ }
+ const FPS = 30;
+ const HOME = path.join(os.homedir(), '.maquina-cortes-gta');
+ const ENGINE = path.join(HOME, 'engine');
+-const cfg = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8'));
++const fail = (msg) => {
++  console.error(msg);
++  process.exit(1);
++};
++
++let cfg;
++try {
++  cfg = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8'));
++} catch {
++  fail(`Não achei ${path.join(HOME, 'config.json')}. Rode o setup.mjs (e grave o perfil) antes do build.`);
++}
++if (!cfg.logo || !fs.existsSync(path.join(HOME, cfg.logo)) || !cfg.profileName) {
++  fail('Perfil incompleto (nome ou logo). Rode: node setup.mjs --profile "NOME" --logo "CAMINHO/DA/LOGO.png"');
++}
++for (const f of ['source.mp4', 'bottom.mp4', 'captions.json', 'silences.json', 'meta.json', 'cuts.json']) {
++  if (!fs.existsSync(path.join(work, f))) {
++    fail(
++      f === 'bottom.mp4'
++        ? 'Falta work/bottom.mp4 (o vídeo da metade de baixo). Baixe o trailer oficial ou o vídeo que o usuário mandou.'
++        : `Falta ${path.join(work, f)}. Rode o transcribe.mjs e grave o cuts.json antes.`,
++    );
++  }
++}
+ const read = (f) => JSON.parse(fs.readFileSync(path.join(work, f), 'utf8'));
+ const words = read('captions.json');
+ const silences = read('silences.json');
+@@ -36,150 +58,114 @@ const probeDur = (f) =>
+ const bottomTotal = probeDur(path.join(work, 'bottom.mp4'));
+ const sourceTotal = probeDur(path.join(work, 'source.mp4'));
+ 
+-// tira as pausas longas (guarda um respiro de 0,12 s em cada ponta)
+-function segmentsFor(start, end, minSilence = 0.5, pad = 0.12) {
+-  let cursor = start;
+-  const segs = [];
+-  for (const s of silences) {
+-    if (s.end <= start || s.start >= end || s.end - s.start < minSilence) continue;
+-    const cutFrom = Math.max(s.start + pad, start);
+-    const cutTo = Math.min(s.end - pad, end);
+-    if (cutTo - cutFrom < 0.2) continue;
+-    if (cutFrom - cursor > 0.3) segs.push({from: cursor, to: cutFrom});
+-    cursor = cutTo;
+-  }
+-  if (end - cursor > 0.3) segs.push({from: cursor, to: end});
+-  return segs.length ? segs : [{from: start, to: end}];
+-}
++// efeitos sonoros (opcionais) em ~/.maquina-cortes-gta/sfx
++const sfxDir = path.join(HOME, 'sfx');
++const sfxFile = (name) => {
++  const f = ['.mp3', '.wav'].map((e) => path.join(sfxDir, name + e)).find((p) => fs.existsSync(p));
++  if (!f) return null;
++  const dst = `sfx-${name}${path.extname(f)}`;
++  fs.copyFileSync(f, path.join(work, dst));
++  return dst;
++};
++const SFX = {impacto: sfxFile('impacto'), whoosh: sfxFile('whoosh'), pop: sfxFile('pop'), clique: sfxFile('clique') || sfxFile('pop')};
++const gain = cfg.sfxGain ?? 0.6; // volume geral dos efeitos (bem abaixo da voz)
+ 
+-// cortes rápidos: quebra planos longos a cada ~`every` segundos, sempre no começo de uma palavra
+-// (não tira conteúdo; cada quebra é um jump cut com mudança de zoom, SEM flash nem swoosh; só as viradas de seção
+-// listadas em `turns` ganham flash e swoosh). every = 0 desliga.
+-function splitSegs(segs, every) {
+-  if (!every) return segs;
+-  const out = [];
+-  for (const s of segs) {
+-    const starts = words.map((w) => w.startMs / 1000).filter((t) => t > s.from + 1 && t < s.to - 1);
+-    let cursor = s.from;
+-    while (s.to - cursor > every * 1.5) {
+-      const target = cursor + every;
+-      const cand = starts
+-        .filter((t) => t > cursor + 1.2 && t < s.to - 1)
+-        .sort((a, b) => Math.abs(a - target) - Math.abs(b - target))[0];
+-      if (!cand) break;
+-      out.push({from: cursor, to: cand});
+-      cursor = cand;
+-    }
+-    out.push({from: cursor, to: s.to});
++// pega uma imagem: arquivo do usuário ou busca no Google (API oficial)
++async function imageSource(spec, tag) {
++  if (spec.file) {
++    if (fs.existsSync(spec.file)) return spec.file;
++    console.warn(`Imagem ignorada: não achei o arquivo ${spec.file}.`);
++    return null;
+   }
+-  return out;
+-}
+-
+-// agrupa as palavras em páginas de até 3 palavras
+-function makePages(list) {
+-  const pages = [];
+-  let cur = [];
+-  const flush = () => {
+-    if (cur.length) pages.push({words: cur, startMs: cur[0].startMs, endMs: cur[cur.length - 1].endMs});
+-    cur = [];
+-  };
+-  for (const w of list) {
+-    const gap = cur.length ? w.startMs - cur[cur.length - 1].endMs : 0;
+-    const chars = cur.reduce((n, x) => n + x.text.length, 0) + w.text.length;
+-    if (cur.length >= 3 || chars > 20 || gap > 600) flush();
+-    cur.push(w);
+-    if (/[.!?…]$/.test(w.text)) flush();
++  if (!spec.query) return null;
++  try {
++    const [src] = await searchImages(spec.query, path.join(work, 'imgs'), 1, tag);
++    if (!src) console.warn(`Imagem "${spec.query}" ignorada: a busca não trouxe nenhuma imagem utilizável.`);
++    return src || null;
++  } catch (e) {
++    console.warn(`Imagem "${spec.query}" ignorada: ${e.message}. Opções: GOOGLE_API_KEY e GOOGLE_CSE_ID, mandar o arquivo ("file") ou seguir sem ela.`);
++    return null;
+   }
+-  flush();
+-  pages.forEach((p, i) => {
+-    const next = pages[i + 1];
+-    p.endMs = Math.min(next ? next.startMs : Infinity, p.endMs + 250);
+-    p.words = p.words.map((w) => ({...w, text: w.text.replace(/[,;:]$/, '')}));
+-  });
+-  return pages;
+ }
+ 
++const safeId = (id, i) => String(id || `corte-${i + 1}`).replace(/[^\p{L}\p{N}_-]+/gu, '-').slice(0, 80);
+ const results = [];
+ for (const [idx, clip] of cuts.clips.entries()) {
+-  const start = Math.max(0, clip.start);
+-  const end = Math.min(sourceTotal, clip.end);
+-  // `ritmo`: padrão = jump cuts a cada ~2,8 s (zoom muda, corte seco, SEM swoosh); "normal" = só tira as pausas;
+-  // "rapido" = o estilo antigo (flash + swoosh em TODO corte); `cutEvery` em segundos muda o intervalo.
+-  // `turns`: lista de segundos (do vídeo de origem) das VIRADAS DE SEÇÃO (muda de assunto, entra b-roll, ex.: o
+-  // streamer cita PlayStation/PS5): só nelas entram flash e swoosh (3 a 5 por corte).
+-  const legacy = clip.ritmo === 'rapido';
+-  const every = clip.ritmo === 'normal' ? 0 : clip.cutEvery ?? (legacy ? 3.2 : 2.8);
+-  let segs = splitSegs(segmentsFor(start, end), every);
+-  for (const t of clip.turns || []) {
+-    const k = segs.findIndex((x) => t > x.from + 0.3 && t < x.to - 0.3);
+-    if (k >= 0) segs.splice(k, 1, {from: segs[k].from, to: t}, {from: t, to: segs[k].to});
++  const id = safeId(clip.id, idx);
++  if (only.length && !only.includes(id) && !only.includes(clip.id)) continue;
++  if (!(clip.end > clip.start)) {
++    console.error(`${id}: "end" precisa ser maior que "start". Pulei.`);
++    results.push({id, ok: false, erro: 'start/end inválidos'});
++    continue;
+   }
+-  segs.forEach((x, i) => {
+-    x.turn = i > 0 && (legacy || (clip.turns || []).some((t) => Math.abs(t - x.from) < 0.05));
+-  });
+ 
+-  // linha do tempo nova, em quadros inteiros (mesma conta do componente)
+-  let outFrames = 0;
+-  const mapped = segs.map((s) => {
+-    const frames = Math.max(1, Math.round((s.to - s.from) * FPS));
+-    const m = {...s, outStart: outFrames / FPS};
+-    outFrames += frames;
+-    return m;
+-  });
+-  const total = outFrames / FPS;
++  // 1) início e fim encaixados nas palavras
++  const snapped = snapClip(words, Math.max(0, clip.start), Math.min(sourceTotal, clip.end));
++  const start = snapped.start;
++  const end = Math.min(sourceTotal, snapped.end);
+ 
+-  const remapped = [];
+-  for (const w of words) {
+-    const ws = w.startMs / 1000;
+-    const seg = mapped.find((s) => ws >= s.from - 0.02 && ws < s.to);
+-    if (!seg) continue;
+-    const o = seg.outStart + Math.max(0, ws - seg.from);
+-    const oe = Math.min(seg.outStart + (seg.to - seg.from), o + Math.max(0.12, (w.endMs - w.startMs) / 1000));
+-    remapped.push({text: w.text.toUpperCase(), startMs: Math.round(o * 1000), endMs: Math.round(oe * 1000)});
+-  }
++  // 2) pausas e jump cuts
++  //   ritmo padrão: jump cut seco a cada ~2,8 s (o zoom alterna 100% ↔ 107%, sem flash nem swoosh)
++  //   "normal": só tira as pausas · "rapido": estilo antigo, flash + swoosh em todo corte (não recomendado)
++  //   turns: segundos (do vídeo de origem) das viradas de seção; só nelas entram flash e swoosh
++  const legacy = clip.ritmo === 'rapido';
++  const every = clip.ritmo === 'normal' ? 0 : clip.cutEvery ?? (legacy ? 3.2 : 2.8);
++  const pausas = {minSilence: cfg.pausaMinima ?? 0.3, keep: cfg.pausaFica ?? 0.2, longSilence: cfg.pausaLongaNaFrase ?? 0.8};
++  const segs = applyTurns(words, splitSegs(words, segmentsFor(words, silences, start, end, pausas), every), clip.turns || [], legacy);
++  const {mapped, total} = mapTimeline(segs, FPS);
+ 
+-  // ---- efeitos sonoros e imagens ----
+-  const toOut = (t) => {
+-    const m = mapped.find((x) => t >= x.from - 0.02 && t < x.to) ?? mapped[mapped.length - 1];
+-    return Math.max(0, m.outStart + (t - m.from));
+-  };
+-  const sfxDir = path.join(HOME, 'sfx');
+-  const gain = cfg.sfxGain ?? 0.6; // volume geral dos efeitos (os efeitos ficam bem abaixo da voz)
+-  const sfxFile = (name) => {
+-    const f = ['.mp3', '.wav'].map((e) => path.join(sfxDir, name + e)).find((p) => fs.existsSync(p));
+-    if (!f) return null;
+-    const dst = `sfx-${name}${path.extname(f)}`;
+-    fs.copyFileSync(f, path.join(work, dst));
+-    return dst;
+-  };
+-  const sfx = [];
+-  const impact = sfxFile('impacto');
+-  const whoosh = sfxFile('whoosh');
+-  const pop = sfxFile('pop');
+-  if (impact) sfx.push({file: impact, at: 0, volume: 0.5 * gain});
+-  if (whoosh) mapped.filter((m) => m.turn).forEach((m) => sfx.push({file: whoosh, at: Math.max(0, m.outStart - 0.08), volume: 0.45 * gain}));
++  // 3) legendas na linha do tempo nova
++  const remapped = remapWords(words, mapped).map((w) => ({...w, text: w.text.toUpperCase()}));
++
++  // 4) imagens
+   const images = [];
+   for (const [k, im] of (clip.images || []).entries()) {
+-    let src = im.file && fs.existsSync(im.file) ? im.file : null;
+-    if (!src && im.query) {
+-      try {
+-        [src] = await searchImages(im.query, path.join(work, 'imgs'), 1, `${clip.id}-${k}`);
+-      } catch (e) {
+-        console.warn(`Imagem "${im.query}" ignorada: ${e.message}. Opções: configurar GOOGLE_API_KEY e GOOGLE_CSE_ID, mandar a imagem como arquivo ("file") ou seguir sem ela.`);
+-      }
++    const tipo = im.tipo || (im.files || im.queries ? 'comparar' : 'foto');
++    const specs = tipo === 'comparar' ? (im.files || im.queries || []).map((x) => (im.files ? {file: x} : {query: x})) : [im];
++    const files = [];
++    for (const [n, spec] of specs.entries()) {
++      const src = await imageSource(spec, `${id}-${k}-${n}`);
++      if (!src) continue;
++      const dst = `img-${id}-${k}-${n}${path.extname(src)}`;
++      fs.copyFileSync(src, path.join(work, dst));
++      files.push(dst);
++    }
++    if (!files.length || (tipo === 'comparar' && files.length < 2)) continue;
++    const dur = Math.max(0.6, im.dur ?? (tipo === 'comparar' ? 3 : 2.2));
++    const at = toOut(mapped, im.at);
++    if (at > total - 0.6) {
++      console.warn(`${id}: a imagem ${k + 1} cai depois do fim do corte e foi ignorada.`);
++      continue;
+     }
+-    if (!src) continue;
+-    const dst = `img-${clip.id}-${k}${path.extname(src)}`;
+-    fs.copyFileSync(src, path.join(work, dst));
+-    const at = toOut(im.at);
+-    images.push({file: dst, at, dur: im.dur ?? 2.2});
+-    if (pop) sfx.push({file: pop, at: Math.max(0, at - 0.05), volume: 0.45 * gain});
++    images.push({
++      tipo,
++      files,
++      labels: im.labels || [],
++      onde: im.onde || (tipo === 'logo' ? 'cima' : 'baixo'),
++      at,
++      dur: Math.min(dur, total - at),
++    });
+   }
+ 
++  // 5) final "Seguir → Seguindo" nos últimos ~3 s (desliga com "final": false no corte ou "finalSeguir": false no config)
++  const outro = clip.final !== false && cfg.finalSeguir !== false && total >= 8 ? {seconds: 3} : null;
++
++  // 6) efeitos: impacto no quadro 0, whoosh só nas viradas, pop em cada imagem, clique no "Seguir".
++  //    Menos de 15 efeitos a cada 35 s: se passar, os whooshes saem primeiro.
++  const sfx = [];
++  if (SFX.impacto) sfx.push({file: SFX.impacto, at: 0, volume: 0.5 * gain, prio: 0});
++  if (SFX.pop) images.forEach((im) => sfx.push({file: SFX.pop, at: Math.max(0, im.at - 0.05), volume: 0.45 * gain, prio: 1}));
++  if (outro && SFX.clique) sfx.push({file: SFX.clique, at: total - outro.seconds + 1.25, volume: 0.4 * gain, prio: 1});
++  if (SFX.whoosh) mapped.filter((m) => m.turn).forEach((m) => sfx.push({file: SFX.whoosh, at: Math.max(0, m.outStart - 0.08), volume: 0.45 * gain, prio: 2}));
++  const maxSfx = Math.max(3, Math.floor((total / 35) * 14));
++  sfx.sort((a, b) => a.prio - b.prio || a.at - b.at);
++  if (sfx.length > maxSfx) console.warn(`${id}: ${sfx.length} efeitos é demais para ${total.toFixed(0)} s; fiquei com ${maxSfx}.`);
++  const sfxFinal = sfx.slice(0, maxSfx).map(({prio, ...s}) => s);
++
+   const bottomStart = Math.min(clip.bottomStart ?? (8 + idx * 17) % Math.max(1, bottomTotal - 5), Math.max(0, bottomTotal - 5));
+   const props = {
+     totalSeconds: total,
+-    segments: segs.map(({from, to, turn}) => ({from, to, turn: !!turn})),
++    segments: mapped.map(({from, to, turn}) => ({from, to, turn: !!turn})),
+     sourceFile: 'source.mp4',
+     bottomFile: 'bottom.mp4',
+     bottomStart,
+@@ -190,13 +176,15 @@ for (const [idx, clip] of cuts.clips.entries()) {
+     sourceHeight: meta.height,
+     pages: makePages(remapped),
+     watermark: {logo: logoName, name: cfg.profileName},
+-    sfx,
++    caption: {color: cfg.corPalavra || '#FFD400'},
++    outro,
++    sfx: sfxFinal,
+     images,
+   };
+-  const propsFile = path.join(work, `props-${clip.id}.json`);
++  const propsFile = path.join(work, `props-${id}.json`);
+   fs.writeFileSync(propsFile, JSON.stringify(props));
+-  const out = path.resolve(outDir, `${clip.id}.mp4`);
+-  console.log(`> Renderizando ${clip.id} (${total.toFixed(1)} s)`);
++  const out = path.resolve(outDir, `${id}.mp4`);
++  console.log(`> Renderizando ${id} (${total.toFixed(1)} s, ${mapped.length} planos, ${images.length} imagens, ${sfxFinal.length} efeitos)`);
+   // chama o CLI do Remotion direto pelo Node (sem shell): funciona com espaços no caminho, no Windows e fora dele
+   const cli = path.join(ENGINE, 'node_modules', '@remotion', 'cli', 'remotion-cli.js');
+   const r = spawnSync(
+@@ -204,7 +192,8 @@ for (const [idx, clip] of cuts.clips.entries()) {
+     [cli, 'render', 'src/index.js', 'SplitCut', out, `--props=${propsFile}`, `--public-dir=${path.resolve(work)}`, '--codec=h264', '--crf=20', '--log=error'],
+     {cwd: ENGINE, stdio: 'inherit'},
+   );
+-  results.push({id: clip.id, arquivo: out, segundos: Number(total.toFixed(1)), ok: r.status === 0});
++  results.push({id, arquivo: out, segundos: Number(total.toFixed(1)), ok: r.status === 0});
+ }
++if (only.length && !results.length) fail(`Nenhum corte com id ${only.join(', ')} no cuts.json.`);
+ console.log(JSON.stringify(results, null, 2));
+ process.exit(results.every((r) => r.ok) ? 0 : 1);
+diff --git a/skills/maquina-cortes-gta/template/scripts/conferir-cortes.mjs b/skills/maquina-cortes-gta/template/scripts/conferir-cortes.mjs
+new file mode 100644
+index 0000000..ae9083e
+--- /dev/null
++++ b/skills/maquina-cortes-gta/template/scripts/conferir-cortes.mjs
+@@ -0,0 +1,109 @@
++#!/usr/bin/env node
++// Confere o cuts.json ANTES do render: mostra como cada corte começa e termina (depois de encaixar nas palavras),
++// a duração final sem as pausas e os problemas encontrados. Não muda nada.
++// Uso: node conferir-cortes.mjs <pasta_de_trabalho>
++// Sai com código 1 se houver erro (corte sobreposto, tempo inválido, nota abaixo de 6); avisos não bloqueiam.
++import fs from 'node:fs';
++import path from 'node:path';
++import {FILLERS, mapTimeline, mmss, norm, sec, segmentsFor, snapClip} from './timeline.mjs';
++
++const work = process.argv[2];
++if (!work) {
++  console.error('Uso: node conferir-cortes.mjs <pasta_de_trabalho>');
++  process.exit(1);
++}
++const read = (f, fallback) => {
++  try {
++    return JSON.parse(fs.readFileSync(path.join(work, f), 'utf8'));
++  } catch {
++    if (fallback !== undefined) return fallback;
++    console.error(`Não consegui ler ${path.join(work, f)}.`);
++    process.exit(1);
++  }
++};
++const words = read('captions.json');
++const silences = read('silences.json', []);
++const {clips = []} = read('cuts.json');
++const peaks = read('heatmap.json', {}).picos || [];
++
++const text = (a, b) => words.slice(a, b).map((w) => w.text).join(' ');
++const startsWithFiller = (t) => {
++  const n = norm(t);
++  return FILLERS.map(norm).find((f) => n === f || n.startsWith(f + ' '));
++};
++let errors = 0;
++const spans = [];
++
++for (const [i, c] of clips.entries()) {
++  const id = c.id || `corte-${i + 1}`;
++  const issues = [];
++  const err = (m) => {
++    issues.push(`  ERRO: ${m}`);
++    errors++;
++  };
++  const warn = (m) => issues.push(`  aviso: ${m}`);
++  if (!(c.end > c.start)) {
++    err('"end" precisa ser maior que "start".');
++    console.log(`\n${id}\n${issues.join('\n')}`);
++    continue;
++  }
++  const s = snapClip(words, c.start, c.end);
++  if (s.first < 0) {
++    err('não há fala entre start e end.');
++    console.log(`\n${id}\n${issues.join('\n')}`);
++    continue;
++  }
++  const {total} = mapTimeline(segmentsFor(words, silences, s.start, s.end), 30);
++  spans.push({id, a: s.start, b: s.end});
++
++  const abertura = text(s.first, Math.min(s.first + 14, s.last + 1));
++  const fecho = text(Math.max(s.first, s.last - 13), s.last + 1);
++  const ultima = words[s.last].text;
++
++  if (total < 20) warn(`curto (${total.toFixed(1)} s sem pausas); abaixo de 20 s costuma faltar payoff.`);
++  if (total > 75) err(`longo demais (${total.toFixed(1)} s sem pausas); o limite é ~75 s.`);
++  else if (total > 60) warn(`longo (${total.toFixed(1)} s sem pausas); só vale se o assunto for excelente.`);
++  const f = startsWithFiller(abertura);
++  if (f) warn(`começa com aquecimento ("${f}…"); avance o start até a frase do gancho.`);
++  if (!/[.!?…]["”')\]]*$/.test(ultima)) warn(`termina sem fechar a frase ("…${ultima}"); estenda o end até o fim do payoff.`);
++  if (/^(né|ne|entendeu|sabe|tá|ta)\??$/i.test(norm(ultima))) warn('termina num "né?"/"sabe?" solto; recue o end para a frase anterior.');
++  if (c.hook) {
++    const hw = norm(c.hook).split(' ').filter((x) => x.length > 2);
++    const ow = new Set(norm(text(s.first, Math.min(s.first + hw.length + 6, s.last + 1))).split(' '));
++    const hit = hw.length ? hw.filter((x) => ow.has(x)).length / hw.length : 1;
++    if (hit < 0.6) warn(`a frase de gancho não está no começo do corte (só ${(hit * 100).toFixed(0)}% das palavras batem). O corte precisa abrir NELA.`);
++  } else warn('sem "hook" (a frase de gancho) no cuts.json.');
++  if (typeof c.nota === 'number' && c.nota < 6) err(`nota ${c.nota}: abaixo de 6 é descarte.`);
++  if (peaks.length) {
++    const k = peaks.findIndex((p) => p.fim >= s.start && p.inicio <= s.end);
++    if (k >= 0) issues.push(`  + pega o PICO ${k + 1} do "mais reproduzido".`);
++  }
++
++  console.log(`\n${id}  [${mmss(s.start)} → ${mmss(s.end)}]  ${total.toFixed(1)} s sem pausas  nota ${c.nota ?? '?'}`);
++  console.log(`  abre:   ${abertura}${s.last - s.first > 13 ? ' …' : ''}`);
++  console.log(`  fecha:  … ${fecho}`);
++  if (issues.length) console.log(issues.join('\n'));
++}
++
++// sobreposição e repetição entre cortes
++spans.sort((x, y) => x.a - y.a);
++for (let k = 1; k < spans.length; k++) {
++  if (spans[k].a < spans[k - 1].b) {
++    console.log(`\nERRO: ${spans[k - 1].id} e ${spans[k].id} se sobrepõem.`);
++    errors++;
++  }
++}
++const seen = new Map();
++for (const c of clips) {
++  const a = c.assunto && norm(c.assunto);
++  if (!a) continue;
++  if (seen.has(a)) console.log(`\naviso: ${seen.get(a)} e ${c.id} têm o mesmo assunto ("${c.assunto}").`);
++  seen.set(a, c.id);
++}
++const ids = clips.map((c) => c.id);
++if (new Set(ids).size !== ids.length) {
++  console.log('\nERRO: há ids repetidos (os arquivos se sobrescreveriam).');
++  errors++;
++}
++console.log(errors ? `\n${errors} erro(s). Corrija o cuts.json antes de renderizar.` : '\nSem erros. Pode renderizar.');
++process.exit(errors ? 1 : 0);
+diff --git a/skills/maquina-cortes-gta/template/scripts/mais-reproduzido.mjs b/skills/maquina-cortes-gta/template/scripts/mais-reproduzido.mjs
+new file mode 100644
+index 0000000..e978bfe
+--- /dev/null
++++ b/skills/maquina-cortes-gta/template/scripts/mais-reproduzido.mjs
+@@ -0,0 +1,49 @@
++#!/usr/bin/env node
++// Lê o gráfico "Mais reproduzidos" (heatmap) de um vídeo do YouTube pelo yt-dlp, sem navegador.
++// Uso: node mais-reproduzido.mjs "<link do YouTube>" <pasta_de_trabalho> [quantos_picos]
++// Grava <pasta>/heatmap.json e imprime os picos (do mais forte para o mais fraco). O transcript-text.mjs
++// marca as frases que caem num pico. Nem todo vídeo tem o gráfico (vídeo novo ou com poucas visualizações).
++import {spawnSync} from 'node:child_process';
++import fs from 'node:fs';
++import path from 'node:path';
++import {mmss} from './timeline.mjs';
++
++const [url, work, nArg] = process.argv.slice(2);
++if (!url || !work) {
++  console.error('Uso: node mais-reproduzido.mjs "<link do YouTube>" <pasta_de_trabalho> [quantos_picos]');
++  process.exit(1);
++}
++const n = Number(nArg || 5);
++const r = spawnSync('yt-dlp', ['-J', '--skip-download', '--no-playlist', '--no-warnings', url], {encoding: 'utf8', maxBuffer: 64 * 1024 * 1024});
++if (r.error || r.status !== 0) {
++  console.error(`O yt-dlp não conseguiu ler o vídeo: ${(r.stderr || r.error?.message || '').trim().split('\n').pop()}`);
++  process.exit(1);
++}
++const info = JSON.parse(r.stdout);
++const heat = (info.heatmap || []).map((h) => ({inicio: h.start_time, fim: h.end_time, valor: h.value}));
++if (!heat.length) {
++  console.log('Este vídeo não tem o gráfico "Mais reproduzidos". Siga só pela transcrição.');
++  process.exit(2);
++}
++
++// picos: máximos locais, sem os 3% iniciais (o começo é sempre alto), a pelo menos 45 s um do outro
++const dur = info.duration || heat[heat.length - 1].fim;
++const cand = heat
++  .map((h, i) => ({...h, i}))
++  .filter((h) => h.inicio > dur * 0.03)
++  .filter((h) => h.valor >= (heat[h.i - 1]?.valor ?? 0) && h.valor >= (heat[h.i + 1]?.valor ?? 0))
++  .sort((a, b) => b.valor - a.valor);
++const picos = [];
++for (const c of cand) {
++  if (picos.length >= n) break;
++  if (picos.some((p) => Math.abs(p.inicio - c.inicio) < 45)) continue;
++  // alarga o pico enquanto os vizinhos ficam acima de 80% dele
++  let a = c.i;
++  let b = c.i;
++  while (a > 0 && heat[a - 1].valor >= c.valor * 0.8) a--;
++  while (b < heat.length - 1 && heat[b + 1].valor >= c.valor * 0.8) b++;
++  picos.push({inicio: heat[a].inicio, fim: heat[b].fim, valor: Number(c.valor.toFixed(3))});
++}
++fs.mkdirSync(work, {recursive: true});
++fs.writeFileSync(path.join(work, 'heatmap.json'), JSON.stringify({duracao: dur, picos, pontos: heat}, null, 2));
++picos.forEach((p, k) => console.log(`PICO ${k + 1}: ${mmss(p.inicio)} a ${mmss(p.fim)} (intensidade ${p.valor})`));
+diff --git a/skills/maquina-cortes-gta/template/scripts/timeline.mjs b/skills/maquina-cortes-gta/template/scripts/timeline.mjs
+new file mode 100644
+index 0000000..f374aaa
+--- /dev/null
++++ b/skills/maquina-cortes-gta/template/scripts/timeline.mjs
+@@ -0,0 +1,191 @@
++// Lógica da linha do tempo dos cortes, sem efeitos colaterais (dá para testar e reaproveitar).
++// Usada pelo build.mjs (render) e pelo conferir-cortes.mjs (conferência antes do render).
++// Tempos em segundos, a não ser onde o nome diz Ms.
++
++const END_OF_PHRASE = /[.!?…]["”')\]]*$/;
++export const sec = (ms) => ms / 1000;
++
++// Última palavra que começa antes de `t`.
++function wordBefore(words, t) {
++  let found = null;
++  for (const w of words) {
++    if (sec(w.startMs) < t) found = w;
++    else break;
++  }
++  return found;
++}
++
++// Encaixa o início e o fim do corte nas palavras: começa ~0,15 s antes da 1ª palavra do gancho (sem pegar o fim
++// da palavra anterior) e termina ~0,25 s depois da última palavra (sem pegar o começo da seguinte).
++export function snapClip(words, start, end) {
++  const i = words.findIndex((w) => sec(w.startMs) >= start - 0.25);
++  if (i < 0) return {start, end, first: -1, last: -1};
++  let j = -1;
++  for (let k = i; k < words.length && sec(words[k].startMs) < end; k++) j = k;
++  if (j < i) return {start, end, first: -1, last: -1};
++  const firstStart = sec(words[i].startMs);
++  const prevEnd = i > 0 ? sec(words[i - 1].endMs) : 0;
++  const s = Math.max(0, firstStart - 0.15, Math.min(prevEnd + 0.02, firstStart - 0.02));
++  const lastEnd = sec(words[j].endMs);
++  const nextStart = j + 1 < words.length ? sec(words[j + 1].startMs) : Infinity;
++  const e = Math.max(lastEnd, Math.min(lastEnd + 0.25, nextStart - 0.02));
++  return {start: s, end: e, first: i, last: j};
++}
++
++// Tira as pausas. Entre frases (palavra anterior termina em . ! ? …), pausa a partir de `minSilence` fica com
++// `keep` segundos. Dentro da frase, só sai pausa a partir de `longSilence` (hesitação longa). Nenhum trecho
++// com fala é descartado, por menor que seja.
++export function segmentsFor(words, silences, start, end, {minSilence = 0.3, keep = 0.2, longSilence = 0.8} = {}) {
++  const pad = keep / 2;
++  const segs = [];
++  let cursor = start;
++  for (const s of silences) {
++    const a = Math.max(s.start, start);
++    const b = Math.min(s.end, end);
++    if (b - a < minSilence) continue;
++    const prev = wordBefore(words, s.start + 0.05);
++    const betweenPhrases = !prev || END_OF_PHRASE.test(prev.text);
++    if (!betweenPhrases && b - a < longSilence) continue;
++    const cutFrom = a === start ? start : a + pad; // pausa no começo do corte sai inteira
++    const cutTo = b === end ? end : b - pad; // e no fim também
++    if (cutTo - cutFrom < 0.08) continue;
++    if (cutFrom > cursor + 0.01) segs.push({from: cursor, to: cutFrom});
++    cursor = Math.max(cursor, cutTo);
++  }
++  if (end > cursor + 0.01) segs.push({from: cursor, to: end});
++  return segs.length ? segs : [{from: start, to: end}];
++}
++
++// Jump cuts: quebra planos longos a cada ~`every` s, sempre no começo de uma palavra. Não tira conteúdo.
++export function splitSegs(words, segs, every) {
++  if (!every) return segs.map((s) => ({...s}));
++  const out = [];
++  for (const s of segs) {
++    const starts = words.map((w) => sec(w.startMs)).filter((t) => t > s.from + 1 && t < s.to - 1);
++    let cursor = s.from;
++    while (s.to - cursor > every * 1.5) {
++      const target = cursor + every;
++      const cand = starts.filter((t) => t > cursor + 1.2).sort((a, b) => Math.abs(a - target) - Math.abs(b - target))[0];
++      if (!cand) break;
++      out.push({from: cursor, to: cand});
++      cursor = cand;
++    }
++    out.push({from: cursor, to: s.to});
++  }
++  return out;
++}
++
++// Marca as viradas de seção (`turns`, em segundos do vídeo de origem). Se a virada cai perto (< 0,4 s) de um
++// corte que já existe, usa esse corte; se cai numa pausa removida, usa o plano seguinte; senão, abre um corte
++// novo no começo de palavra mais próximo.
++export function applyTurns(words, segs, turns = [], legacy = false) {
++  const out = segs.map((s) => ({...s, turn: false}));
++  const nearestWord = (t) => {
++    let best = t;
++    let d = 0.4;
++    for (const w of words) {
++      const x = sec(w.startMs);
++      if (Math.abs(x - t) < d) {
++        d = Math.abs(x - t);
++        best = x;
++      }
++    }
++    return best;
++  };
++  for (const t0 of turns) {
++    let k = out.findIndex((x) => t0 >= x.from && t0 < x.to);
++    if (k < 0) {
++      k = out.findIndex((x) => x.from >= t0);
++      if (k > 0) out[k].turn = true;
++      continue;
++    }
++    const seg = out[k];
++    if (t0 - seg.from < 0.4) {
++      if (k > 0) seg.turn = true;
++    } else if (seg.to - t0 < 0.4) {
++      if (k + 1 < out.length) out[k + 1].turn = true;
++    } else {
++      const t = nearestWord(t0);
++      if (t - seg.from < 0.3 || seg.to - t < 0.3) continue;
++      out.splice(k, 1, {from: seg.from, to: t, turn: seg.turn}, {from: t, to: seg.to, turn: true});
++    }
++  }
++  if (legacy) out.forEach((s, i) => (s.turn = i > 0));
++  out[0].turn = false;
++  return out;
++}
++
++// Linha do tempo nova, em quadros inteiros (a mesma conta do SplitCut.jsx).
++export function mapTimeline(segs, fps) {
++  let frames = 0;
++  const mapped = segs.map((s) => {
++    const n = Math.max(1, Math.round((s.to - s.from) * fps));
++    const m = {...s, outStart: frames / fps, outEnd: (frames + n) / fps};
++    frames += n;
++    return m;
++  });
++  return {mapped, total: frames / fps};
++}
++
++// Segundo do vídeo de origem → segundo do corte. Um tempo dentro de uma pausa removida vai para o plano seguinte.
++export function toOut(mapped, t) {
++  const m = mapped.find((x) => t >= x.from && t < x.to);
++  if (m) return m.outStart + (t - m.from);
++  const next = mapped.find((x) => x.from >= t);
++  if (next) return next.outStart;
++  return mapped.length ? mapped[mapped.length - 1].outEnd : 0;
++}
++
++// Palavras na linha do tempo do corte.
++export function remapWords(words, mapped) {
++  const out = [];
++  for (const w of words) {
++    const ws = sec(w.startMs);
++    const seg = mapped.find((s) => ws >= s.from - 0.02 && ws < s.to);
++    if (!seg) continue;
++    const o = seg.outStart + Math.max(0, ws - seg.from);
++    const oe = Math.min(seg.outEnd, o + Math.max(0.12, sec(w.endMs - w.startMs)));
++    out.push({text: w.text, startMs: Math.round(o * 1000), endMs: Math.round(oe * 1000)});
++  }
++  return out;
++}
++
++// Agrupa as palavras em páginas de legenda (até `maxWords` palavras e `maxChars` letras).
++export function makePages(list, {maxWords = 3, maxChars = 20} = {}) {
++  const pages = [];
++  let cur = [];
++  const flush = () => {
++    if (cur.length) pages.push({words: cur, startMs: cur[0].startMs, endMs: cur[cur.length - 1].endMs});
++    cur = [];
++  };
++  for (const w of list) {
++    const gap = cur.length ? w.startMs - cur[cur.length - 1].endMs : 0;
++    const chars = cur.reduce((n, x) => n + x.text.length, 0) + w.text.length;
++    if (cur.length >= maxWords || chars > maxChars || gap > 600) flush();
++    cur.push(w);
++    if (END_OF_PHRASE.test(w.text)) flush();
++  }
++  flush();
++  pages.forEach((p, i) => {
++    const next = pages[i + 1];
++    p.endMs = Math.min(next ? next.startMs : Infinity, p.endMs + 250);
++    p.words = p.words.map((w) => ({...w, text: w.text.replace(/[,;:]+$/, '')}));
++  });
++  return pages;
++}
++
++// Palavras de aquecimento que não devem abrir um corte.
++export const FILLERS = ['então', 'entao', 'galera', 'bom', 'tipo', 'né', 'ne', 'é', 'e aí', 'enfim', 'beleza', 'olha', 'cara', 'mano', 'voltando', 'assim', 'ah', 'eh', 'hum', 'bem'];
++export const norm = (s) =>
++  s
++    .toLowerCase()
++    .normalize('NFD')
++    .replace(/[\u0300-\u036f]/g, '')
++    .replace(/[^a-z0-9 ]/g, ' ')
++    .replace(/\s+/g, ' ')
++    .trim();
++export const mmss = (t) => {
++  const m = Math.floor(t / 60);
++  const s = t - m * 60;
++  return `${String(m).padStart(2, '0')}:${s.toFixed(1).padStart(4, '0')}`;
++};
+diff --git a/skills/maquina-cortes-gta/template/scripts/transcribe.mjs b/skills/maquina-cortes-gta/template/scripts/transcribe.mjs
+index 2aac206..80f8fba 100644
+--- a/skills/maquina-cortes-gta/template/scripts/transcribe.mjs
++++ b/skills/maquina-cortes-gta/template/scripts/transcribe.mjs
+@@ -1,6 +1,6 @@
+ #!/usr/bin/env node
+ // Transcreve o vídeo com whisper.cpp (palavra por palavra) e mede os silêncios.
+-// Uso: node scripts/transcribe.mjs <video> <pasta_de_trabalho> [idioma]
++// Uso: node scripts/transcribe.mjs <video> <pasta_de_trabalho> [idioma] [segundos_maximos]
+ // Saídas na pasta de trabalho: audio16k.wav, captions.json, silences.json, meta.json
+ import {execFileSync, spawnSync} from 'node:child_process';
+ import fs from 'node:fs';
+@@ -32,8 +32,10 @@ fs.writeFileSync(path.join(work, 'meta.json'), JSON.stringify(meta, null, 2));
+ const wav = path.join(work, 'audio16k.wav');
+ execFileSync('ffmpeg', ['-y', '-v', 'error', '-i', video, ...(maxSeconds ? ['-t', String(maxSeconds)] : []), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wav]);
+ 
+-// silêncios (para cortar as pausas depois)
+-const sd = spawnSync('ffmpeg', ['-hide_banner', '-i', wav, '-af', 'silencedetect=noise=-35dB:d=0.45', '-f', 'null', '-'], {encoding: 'utf8'});
++// silêncios (para cortar as pausas depois). d=0.3: a regra é "pausa entre frases acima de 0,3 s vira 0,2 s".
++// Live com música ou som de jogo por baixo: suba o limiar com "silencioDb" no config.json (ex.: -28).
++const noiseDb = cfg.silencioDb ?? -35;
++const sd = spawnSync('ffmpeg', ['-hide_banner', '-i', wav, '-af', `silencedetect=noise=${noiseDb}dB:d=0.3`, '-f', 'null', '-'], {encoding: 'utf8'});
+ const silences = [];
+ let open = null;
+ for (const line of sd.stderr.split(/\r?\n/)) {
+@@ -45,7 +47,7 @@ for (const line of sd.stderr.split(/\r?\n/)) {
+     open = null;
+   }
+ }
+-if (open !== null) silences.push({start: open, end: meta.duration});
++if (open !== null) silences.push({start: open, end: maxSeconds ? Math.min(maxSeconds, meta.duration) : meta.duration});
+ fs.writeFileSync(path.join(work, 'silences.json'), JSON.stringify(silences, null, 2));
+ 
+ // transcrição com tempo por palavra
+diff --git a/skills/maquina-cortes-gta/template/scripts/transcript-text.mjs b/skills/maquina-cortes-gta/template/scripts/transcript-text.mjs
+index aa7d4c6..f07cb27 100644
+--- a/skills/maquina-cortes-gta/template/scripts/transcript-text.mjs
++++ b/skills/maquina-cortes-gta/template/scripts/transcript-text.mjs
+@@ -1,33 +1,66 @@
+ #!/usr/bin/env node
+-// Imprime a transcrição como linhas "[mm:ss] frase", para o Claude ler sem despejar o JSON.
+-// Uso: node scripts/transcript-text.mjs <pasta_de_trabalho>
++// Imprime a transcrição para o Claude ler sem despejar o JSON.
++//
++//   node transcript-text.mjs <pasta>                       frases: "[mm:ss.s] frase" (pausas longas marcadas)
++//   node transcript-text.mjs <pasta> --de 300 --ate 360    só esse trecho (segundos ou mm:ss)
++//   node transcript-text.mjs <pasta> --de 300 --ate 330 --palavras
++//                                                          palavra por palavra, com o segundo exato de cada uma
++//                                                          (para acertar o início do gancho e o fim do payoff)
++// Se existir <pasta>/heatmap.json (do mais-reproduzido.mjs), as frases dentro de um pico levam "[PICO n]".
+ import fs from 'node:fs';
+ import path from 'node:path';
++import {mmss, sec} from './timeline.mjs';
+ 
+-const work = process.argv[2];
++const args = process.argv.slice(2);
++const work = args[0];
+ if (!work) {
+-  console.error('Uso: node scripts/transcript-text.mjs <pasta_de_trabalho>');
++  console.error('Uso: node transcript-text.mjs <pasta_de_trabalho> [--de S] [--ate S] [--palavras]');
+   process.exit(1);
+ }
+-const words = JSON.parse(fs.readFileSync(path.join(work, 'captions.json'), 'utf8'));
+-const mmss = (ms) => {
+-  const s = Math.floor(ms / 1000);
+-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
++const opt = (n) => {
++  const i = args.indexOf(n);
++  if (i < 0) return undefined;
++  const v = args[i + 1];
++  if (/^\d+:\d+(\.\d+)?$/.test(v)) {
++    const [m, s] = v.split(':');
++    return Number(m) * 60 + Number(s);
++  }
++  return Number(v);
++};
++const from = opt('--de') ?? 0;
++const to = opt('--ate') ?? Infinity;
++const words = JSON.parse(fs.readFileSync(path.join(work, 'captions.json'), 'utf8')).filter((w) => sec(w.startMs) >= from && sec(w.startMs) < to);
++
++let peaks = [];
++try {
++  peaks = JSON.parse(fs.readFileSync(path.join(work, 'heatmap.json'), 'utf8')).picos || [];
++} catch {
++  /* sem heatmap */
++}
++const peakTag = (t) => {
++  const k = peaks.findIndex((p) => t >= p.inicio - 5 && t <= p.fim + 5);
++  return k >= 0 ? ` [PICO ${k + 1}]` : '';
+ };
+ 
++if (args.includes('--palavras')) {
++  for (const w of words) console.log(`${sec(w.startMs).toFixed(2)}–${sec(w.endMs).toFixed(2)}  ${w.text}`);
++  process.exit(0);
++}
++
+ let line = [];
+ let lineStart = 0;
+ const flush = () => {
+-  if (line.length) console.log(`[${mmss(lineStart)}] ${line.join(' ')}`);
++  if (line.length) console.log(`[${mmss(lineStart)}]${peakTag(lineStart)} ${line.join(' ')}`);
+   line = [];
+ };
+ words.forEach((w, i) => {
+   const prev = words[i - 1];
+-  if (!line.length) lineStart = w.startMs;
+-  else if (prev && w.startMs - prev.endMs > 900) {
++  const gap = prev ? sec(w.startMs - prev.endMs) : 0;
++  if (line.length && gap > 0.9) {
+     flush();
+-    lineStart = w.startMs;
++    if (gap > 2) console.log(`   (pausa de ${gap.toFixed(1)} s)`);
+   }
++  if (!line.length) lineStart = sec(w.startMs);
+   line.push(w.text);
+   if (/[.!?…]$/.test(w.text) || line.length >= 28) flush();
+ });
+diff --git a/skills/maquina-cortes-gta/template/src/Root.jsx b/skills/maquina-cortes-gta/template/src/Root.jsx
+index 4f9db60..2e775bc 100644
+--- a/skills/maquina-cortes-gta/template/src/Root.jsx
++++ b/skills/maquina-cortes-gta/template/src/Root.jsx
+@@ -18,6 +18,10 @@ const defaultProps = {
+   sourceHeight: 720,
+   pages: [],
+   watermark: {logo: 'logo.png', name: 'SEU PERFIL'},
++  caption: {color: '#FFD400'},
++  outro: null,
++  sfx: [],
++  images: [],
+ };
+ 
+ export const Root = () => (
+diff --git a/skills/maquina-cortes-gta/template/src/SplitCut.jsx b/skills/maquina-cortes-gta/template/src/SplitCut.jsx
+index d10dde2..fa06d6b 100644
+--- a/skills/maquina-cortes-gta/template/src/SplitCut.jsx
++++ b/skills/maquina-cortes-gta/template/src/SplitCut.jsx
+@@ -8,40 +8,40 @@ import {
+   OffthreadVideo,
+   Sequence,
+   interpolate,
++  spring,
+   staticFile,
+   useCurrentFrame,
+   useVideoConfig,
+ } from 'remotion';
+ import {loadFont} from '@remotion/google-fonts/Montserrat';
+ 
+-const {fontFamily} = loadFont('normal', {weights: ['800', '900'], subsets: ['latin']});
++const {fontFamily} = loadFont('normal', {weights: ['700', '800', '900'], subsets: ['latin']});
+ 
+ const W = 1080;
+ const H = 1920;
+ const TOP_H = H / 2; // metade de cima (streamer) e metade de baixo (vídeo)
+ const YELLOW = '#FFD400';
++const FOLLOW = '#FF6A1A'; // botão "Seguir"
++const clamp = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'};
+ 
+-// Zoom curto a cada corte: o 1º plano entra mais "apertado", os ímpares dão um leve punch-in.
+-const Punch = ({index, children}) => {
++// Plano do streamer. Jump cut seco: o zoom só alterna entre 100% e 107% de um plano para o outro.
++// O 1º plano e as viradas de seção (turns) entram com um punch-in curto que assenta no zoom do plano.
++const Plane = ({index, turn, children}) => {
+   const frame = useCurrentFrame();
+-  const from = index === 0 ? 1.12 : index % 2 === 1 ? 1.06 : 1.0;
+-  const s = interpolate(frame, [0, 9], [from, 1], {
+-    extrapolateRight: 'clamp',
+-    easing: Easing.out(Easing.cubic),
+-  });
++  const base = index % 2 === 0 ? 1.0 : 1.07;
++  const s = index === 0 || turn ? interpolate(frame, [0, 8], [base + 0.1, base], {...clamp, easing: Easing.out(Easing.cubic)}) : base;
+   return <AbsoluteFill style={{transform: `scale(${s})`}}>{children}</AbsoluteFill>;
+ };
+ 
+-// Flash branco bem rápido, só nas viradas de seção (`turns`); o swoosh toca junto, via props.sfx.
++// Flash branco bem rápido, só nas viradas de seção; o swoosh toca junto, via props.sfx.
+ const Flash = () => {
+   const frame = useCurrentFrame();
+-  const o = interpolate(frame, [0, 5], [0.38, 0], {extrapolateRight: 'clamp'});
++  const o = interpolate(frame, [0, 5], [0.38, 0], clamp);
+   return <AbsoluteFill style={{background: '#fff', opacity: o}} />;
+ };
+ 
+-// Estilo do vídeo de cima. Sem `crop`: preenche a metade (cover) e usa `focus` para enquadrar.
+-// Com `crop` ({x, y, w, h} em pixels do vídeo de origem): amplia só essa região (ex.: a câmera do streamer
+-// numa live com várias câmeras e a tela do jogo) até preencher a metade.
++// Sem `crop`: preenche a metade (cover) e usa `focus` para enquadrar.
++// Com `crop` ({x, y, w, h} em pixels do vídeo de origem): amplia só essa região até preencher a metade.
+ const topVideoStyle = (crop, srcW, srcH, focus) => {
+   if (!crop) {
+     return {width: '100%', height: '100%', objectFit: 'cover', objectPosition: `${focus.x}% ${focus.y}%`};
+@@ -68,14 +68,9 @@ const Top = ({segments, fps, sourceFile, focus, crop, srcW, srcH}) => {
+         offset += frames;
+         return (
+           <Sequence key={i} from={from} durationInFrames={frames}>
+-            <Punch index={i}>
+-              <OffthreadVideo
+-                src={staticFile(sourceFile)}
+-                startFrom={start}
+-                endAt={start + frames}
+-                style={topVideoStyle(crop, srcW, srcH, focus)}
+-              />
+-            </Punch>
++            <Plane index={i} turn={seg.turn}>
++              <OffthreadVideo src={staticFile(sourceFile)} startFrom={start} endAt={start + frames} style={topVideoStyle(crop, srcW, srcH, focus)} />
++            </Plane>
+             {seg.turn ? <Flash /> : null}
+           </Sequence>
+         );
+@@ -86,63 +81,103 @@ const Top = ({segments, fps, sourceFile, focus, crop, srcW, srcH}) => {
+ 
+ const Bottom = ({file, start, duration, fps, total}) => {
+   const startFrame = Math.round(start * fps);
+-  const loopFrames = duration > 0 ? Math.max(30, Math.floor(duration * fps) - 2) : total;
++  const available = Math.floor(duration * fps) - 2;
++  const loopFrames = available >= 30 ? available : total;
+   return (
+     <div style={{position: 'absolute', left: 0, top: TOP_H, width: W, height: H - TOP_H, overflow: 'hidden', background: '#000'}}>
+       <Loop durationInFrames={loopFrames}>
+-        <OffthreadVideo
+-          src={staticFile(file)}
+-          startFrom={startFrame}
+-          endAt={startFrame + loopFrames}
+-          muted
+-          style={{width: '100%', height: '100%', objectFit: 'cover'}}
+-        />
++        <OffthreadVideo src={staticFile(file)} startFrom={startFrame} endAt={startFrame + loopFrames} muted style={{width: '100%', height: '100%', objectFit: 'cover'}} />
+       </Loop>
+     </div>
+   );
+ };
+ 
+-// Imagem que aparece na metade de baixo (ex.: print ou foto do GTA): entra com escala 0,9 → 1 e fade, sai com fade.
+-const PopImage = ({file, durationInFrames}) => {
++// Área de cada metade para os popups.
++const AREA = {
++  cima: {top: 60, height: TOP_H - 220},
++  baixo: {top: TOP_H + 150, height: H - TOP_H - 300},
++};
++
++// Saída comum dos popups: fade nos últimos 6 quadros.
++const useOut = (durationInFrames) => {
++  const frame = useCurrentFrame();
++  return interpolate(frame, [durationInFrames - 6, durationInFrames], [1, 0], clamp);
++};
++
++// Foto/print/arte: cartão com borda branca, entra com escala 0,9 → 1 e um leve balanço.
++const PhotoPop = ({file, onde, durationInFrames}) => {
+   const frame = useCurrentFrame();
+-  const inn = interpolate(frame, [0, 8], [0, 1], {extrapolateRight: 'clamp', easing: Easing.out(Easing.back(1.6))});
+-  const out = interpolate(frame, [durationInFrames - 6, durationInFrames], [1, 0], {extrapolateLeft: 'clamp'});
+-  const scale = 0.9 + 0.1 * inn;
++  const inn = interpolate(frame, [0, 8], [0, 1], {...clamp, easing: Easing.out(Easing.back(1.6))});
++  const out = useOut(durationInFrames);
++  const a = AREA[onde] || AREA.baixo;
+   return (
+-    <div
+-      style={{
+-        position: 'absolute',
+-        left: 0,
+-        width: W,
+-        top: TOP_H + 70,
+-        height: H - TOP_H - 140,
+-        display: 'flex',
+-        alignItems: 'center',
+-        justifyContent: 'center',
+-        opacity: Math.min(inn, out),
+-        transform: `scale(${scale})`,
+-      }}
+-    >
+-      <Img
+-        src={staticFile(file)}
+-        style={{maxWidth: 800, maxHeight: 620, objectFit: 'contain', borderRadius: 26, border: '5px solid #fff', boxShadow: '0 18px 48px rgba(0,0,0,0.55)'}}
+-      />
++    <div style={{position: 'absolute', left: 0, width: W, ...a, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: Math.min(inn, out), transform: `scale(${0.9 + 0.1 * inn})`}}>
++      <Img src={staticFile(file)} style={{maxWidth: 820, maxHeight: a.height, objectFit: 'contain', borderRadius: 26, border: '6px solid #fff', boxShadow: '0 18px 48px rgba(0,0,0,0.55)'}} />
+     </div>
+   );
+ };
+ 
+-// Legenda palavra por palavra, na divisa das duas metades, com a palavra falada em amarelo.
+-const Captions = ({pages, fps}) => {
++// Logo com fundo transparente vindo em direção à tela: 0,35× → 1× com aceleração, segura, e passa da tela (1,6×) sumindo.
++const LogoPop = ({file, onde, durationInFrames}) => {
++  const frame = useCurrentFrame();
++  const a = AREA[onde] || AREA.cima;
++  const exitStart = Math.max(10, durationInFrames - 7);
++  const grow = interpolate(frame, [0, 9], [0.35, 1], {...clamp, easing: Easing.in(Easing.quad)});
++  const pass = interpolate(frame, [exitStart, durationInFrames], [1, 1.6], {...clamp, easing: Easing.in(Easing.cubic)});
++  const o = Math.min(interpolate(frame, [0, 4], [0, 1], clamp), interpolate(frame, [exitStart, durationInFrames], [1, 0], clamp));
++  return (
++    <div style={{position: 'absolute', left: 0, width: W, ...a, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: o, transform: `scale(${grow * pass})`}}>
++      <Img src={staticFile(file)} style={{maxWidth: 760, maxHeight: a.height * 0.85, objectFit: 'contain', filter: 'drop-shadow(0 14px 30px rgba(0,0,0,0.6))'}} />
++    </div>
++  );
++};
++
++// Comparação lado a lado (ex.: mapa do GTA 5 | mapa do GTA 6), cada um com o rótulo embaixo. O 2º entra 6 quadros depois.
++const ComparePop = ({files, labels, onde, durationInFrames}) => {
++  const frame = useCurrentFrame();
++  const {fps} = useVideoConfig();
++  const out = useOut(durationInFrames);
++  const a = AREA[onde] || AREA.baixo;
++  return (
++    <div style={{position: 'absolute', left: 0, width: W, ...a, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 28, opacity: out}}>
++      {files.slice(0, 2).map((f, i) => {
++        const s = spring({frame: frame - i * 6, fps, config: {damping: 14, stiffness: 180}});
++        return (
++          <div key={f} style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, transform: `translateY(${(1 - s) * 80}px) scale(${0.85 + 0.15 * s})`, opacity: s}}>
++            <Img src={staticFile(f)} style={{width: 470, height: a.height - 120, objectFit: 'cover', borderRadius: 22, border: '6px solid #fff', boxShadow: '0 16px 40px rgba(0,0,0,0.55)'}} />
++            {labels[i] ? (
++              <span style={{fontFamily, fontWeight: 900, fontSize: 54, color: '#fff', textTransform: 'uppercase', WebkitTextStroke: '9px #000', paintOrder: 'stroke fill'}}>{labels[i]}</span>
++            ) : null}
++          </div>
++        );
++      })}
++    </div>
++  );
++};
++
++const Popup = ({im, durationInFrames}) => {
++  if (im.tipo === 'logo') return <LogoPop file={im.files[0]} onde={im.onde} durationInFrames={durationInFrames} />;
++  if (im.tipo === 'comparar') return <ComparePop files={im.files} labels={im.labels} onde={im.onde} durationInFrames={durationInFrames} />;
++  return <PhotoPop file={im.files[0]} onde={im.onde} durationInFrames={durationInFrames} />;
++};
++
++// Legenda palavra por palavra na divisa. A palavra falada fica colorida e cresce um pouco; nos intervalos entre
++// palavras, a última dita continua acesa (não pisca branco).
++const Captions = ({pages, fps, color}) => {
+   const frame = useCurrentFrame();
+   const ms = (frame / fps) * 1000;
+   const page = pages.find((p) => ms >= p.startMs && ms < p.endMs);
+   if (!page) return null;
++  let active = -1;
++  page.words.forEach((w, i) => {
++    if (ms >= w.startMs) active = i;
++  });
+   return (
+     <div
+       style={{
+         position: 'absolute',
+-        left: 50,
+-        width: W - 100,
++        left: 40,
++        width: W - 80,
+         top: TOP_H,
+         transform: 'translateY(-50%)',
+         textAlign: 'center',
+@@ -158,9 +193,10 @@ const Captions = ({pages, fps}) => {
+       }}
+     >
+       {page.words.map((w, i) => {
+-        const active = ms >= w.startMs && ms < w.endMs;
++        const on = i === active;
++        const pop = on ? interpolate(ms - w.startMs, [0, 90], [1.14, 1.06], clamp) : 1;
+         return (
+-          <span key={i} style={{color: active ? YELLOW : '#fff', display: 'inline-block', margin: '0 12px'}}>
++          <span key={i} style={{color: on ? color : '#fff', display: 'inline-block', margin: '0 12px', transform: `scale(${pop})`}}>
+             {w.text}
+           </span>
+         );
+@@ -172,62 +208,102 @@ const Captions = ({pages, fps}) => {
+ // Marca d'água: logo circular à esquerda e o nome do perfil ao lado, no canto superior direito.
+ const Watermark = ({logo, name}) => (
+   <div style={{position: 'absolute', top: 150, right: 40, display: 'flex', alignItems: 'center', gap: 14}}>
+-    <Img
+-      src={staticFile(logo)}
+-      style={{width: 104, height: 104, borderRadius: '50%', objectFit: 'cover', border: '4px solid #fff', boxShadow: '0 6px 18px rgba(0,0,0,0.45)'}}
+-    />
+-    <span
+-      style={{
+-        fontFamily,
+-        fontWeight: 900,
+-        fontSize: 40,
+-        textTransform: 'uppercase',
+-        color: '#fff',
+-        WebkitTextStroke: '7px #14002a',
+-        paintOrder: 'stroke fill',
+-        textShadow: '0 4px 0 rgba(60,0,90,0.6)',
+-      }}
+-    >
+-      {name}
+-    </span>
++    <Img src={staticFile(logo)} style={{width: 104, height: 104, borderRadius: '50%', objectFit: 'cover', border: '4px solid #fff', boxShadow: '0 6px 18px rgba(0,0,0,0.45)'}} />
++    <span style={{fontFamily, fontWeight: 900, fontSize: 40, textTransform: 'uppercase', color: '#fff', WebkitTextStroke: '7px #14002a', paintOrder: 'stroke fill', textShadow: '0 4px 0 rgba(60,0,90,0.6)'}}>{name}</span>
+   </div>
+ );
+ 
++// Cursor (seta) desenhado em SVG.
++const Cursor = ({style}) => (
++  <svg width="64" height="64" viewBox="0 0 24 24" style={style}>
++    <path d="M4 2 L4 19 L8.5 15 L11.5 21.5 L14.2 20.3 L11.3 13.9 L17.5 13.9 Z" fill="#fff" stroke="#000" strokeWidth="1.4" strokeLinejoin="round" />
++  </svg>
++);
++
++// Final "Seguir → Seguindo": pílula branca com o avatar e o nome do perfil; o cursor entra, clica no botão
++// laranja "Seguir" (aos ~1,25 s) e ele vira "Seguindo ✓". Ocupa os últimos `seconds` do corte, na metade de baixo.
++const FollowEnd = ({logo, name, durationInFrames}) => {
++  const frame = useCurrentFrame();
++  const {fps} = useVideoConfig();
++  const click = Math.round(1.25 * fps);
++  const enter = spring({frame, fps, config: {damping: 13, stiffness: 160}});
++  const leave = interpolate(frame, [durationInFrames - 6, durationInFrames], [1, 0], clamp);
++  const press = interpolate(frame, [click - 2, click, click + 4], [1, 0.9, 1], clamp);
++  const done = frame >= click;
++  // cursor: vem de baixo à direita até o botão, aperta e sai
++  const cx = interpolate(frame, [8, click - 2], [980, 742], {...clamp, easing: Easing.inOut(Easing.cubic)});
++  const cy = interpolate(frame, [8, click - 2], [430, 92], {...clamp, easing: Easing.inOut(Easing.cubic)});
++  const cOut = interpolate(frame, [click + 10, click + 18], [1, 0], clamp);
++  const pillW = 860;
++  return (
++    <div style={{position: 'absolute', left: (W - pillW) / 2, top: TOP_H + 330, width: pillW, height: 520, opacity: leave}}>
++      <div
++        style={{
++          position: 'absolute',
++          left: 0,
++          top: 40,
++          width: pillW,
++          height: 150,
++          borderRadius: 75,
++          background: '#fff',
++          boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
++          display: 'flex',
++          alignItems: 'center',
++          padding: '0 18px',
++          gap: 22,
++          transform: `scale(${0.6 + 0.4 * enter})`,
++          opacity: enter,
++        }}
++      >
++        <Img src={staticFile(logo)} style={{width: 114, height: 114, borderRadius: '50%', objectFit: 'cover'}} />
++        <span style={{flex: 1, fontFamily, fontWeight: 800, fontSize: 44, color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{String(name).replace(/^@/, '')}</span>
++        <div
++          style={{
++            height: 96,
++            padding: '0 34px',
++            borderRadius: 48,
++            display: 'flex',
++            alignItems: 'center',
++            fontFamily,
++            fontWeight: 800,
++            fontSize: 40,
++            background: done ? '#E6E6E6' : FOLLOW,
++            color: done ? '#333' : '#fff',
++            transform: `scale(${press})`,
++          }}
++        >
++          {done ? 'Seguindo ✓' : 'Seguir'}
++        </div>
++      </div>
++      <Cursor style={{position: 'absolute', left: cx, top: cy, opacity: Math.min(enter, cOut), transform: `scale(${press})`}} />
++    </div>
++  );
++};
++
+ export const SplitCut = (props) => {
+   const {fps} = useVideoConfig();
+   const total = Math.max(1, Math.round(props.totalSeconds * fps));
++  const outroFrames = props.outro ? Math.min(total, Math.round(props.outro.seconds * fps)) : 0;
+   return (
+     <AbsoluteFill style={{background: '#000'}}>
+-      <Top
+-        segments={props.segments}
+-        fps={fps}
+-        sourceFile={props.sourceFile}
+-        focus={props.focus}
+-        crop={props.crop}
+-        srcW={props.sourceWidth}
+-        srcH={props.sourceHeight}
+-      />
++      <Top segments={props.segments} fps={fps} sourceFile={props.sourceFile} focus={props.focus} crop={props.crop} srcW={props.sourceWidth} srcH={props.sourceHeight} />
+       <Bottom file={props.bottomFile} start={props.bottomStart} duration={props.bottomDuration} fps={fps} total={total} />
+       {(props.images || []).map((im, i) => {
+         const frames = Math.max(12, Math.round(im.dur * fps));
+         return (
+           <Sequence key={`img${i}`} from={Math.round(im.at * fps)} durationInFrames={frames}>
+-            <PopImage file={im.file} durationInFrames={frames} />
++            <Popup im={im} durationInFrames={frames} />
+           </Sequence>
+         );
+       })}
+-      <div
+-        style={{
+-          position: 'absolute',
+-          left: 0,
+-          width: W,
+-          top: TOP_H - 170,
+-          height: 340,
+-          background: 'linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,0.62) 50%, rgba(0,0,0,0))',
+-        }}
+-      />
+-      <Captions pages={props.pages} fps={fps} />
++      <div style={{position: 'absolute', left: 0, width: W, top: TOP_H - 170, height: 340, background: 'linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,0.62) 50%, rgba(0,0,0,0))'}} />
++      <Captions pages={props.pages} fps={fps} color={(props.caption && props.caption.color) || YELLOW} />
+       <Watermark logo={props.watermark.logo} name={props.watermark.name} />
++      {outroFrames ? (
++        <Sequence from={total - outroFrames} durationInFrames={outroFrames}>
++          <FollowEnd logo={props.watermark.logo} name={props.watermark.name} durationInFrames={outroFrames} />
++        </Sequence>
++      ) : null}
+       {(props.sfx || []).map((s, i) => (
+         <Sequence key={`sfx${i}`} from={Math.max(0, Math.round(s.at * fps))} durationInFrames={Math.round(3 * fps)}>
+           <Html5Audio src={staticFile(s.file)} volume={s.volume} />
+-- 
+2.43.0
+
+
+From 6200e5124d2b8fec2fe9b2d649a510884c0c283f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 03:55:29 +0000
+Subject: [PATCH 2/2] =?UTF-8?q?v1.2:=20modo=20autom=C3=A1tico=20(vigia=20d?=
+ =?UTF-8?q?e=20lives,=20cortes=20pelo=20Claude=20Code,=20posts=20no=20YouT?=
+ =?UTF-8?q?ube/TikTok/Instagram=20pelo=20Postiz)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .claude-plugin/plugin.json                    |   2 +-
+ README.md                                     |  20 +-
+ skills/maquina-cortes-gta/SKILL.md            |  18 +-
+ .../references/problemas.md                   |   7 +
+ skills/maquina-cortes-gta/scripts/setup.mjs   |  10 +-
+ .../template/scripts/bin.mjs                  |  75 ++++
+ .../template/scripts/postar.mjs               |  86 +++++
+ .../template/scripts/vigia-lives.mjs          | 329 ++++++++++++++++++
+ 8 files changed, 542 insertions(+), 5 deletions(-)
+ create mode 100644 skills/maquina-cortes-gta/template/scripts/bin.mjs
+ create mode 100644 skills/maquina-cortes-gta/template/scripts/postar.mjs
+ create mode 100644 skills/maquina-cortes-gta/template/scripts/vigia-lives.mjs
+
+diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+index 6a9d27f..b2c3697 100644
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "maquina-cortes-gta",
+-  "version": "1.1.0",
++  "version": "1.2.0",
+   "description": "Transforma um vídeo de streamer ou podcast em vários cortes verticais de Shorts sobre GTA 6, cada um com um assunto e um gancho diferente, no estilo metade streamer e metade vídeo. Legenda palavra por palavra, pausas cortadas, zoom nos cortes e a marca d'água do seu perfil. Edição em Remotion, transcrição local com whisper.cpp.",
+   "author": {
+     "name": "Pedro Cardoso",
+diff --git a/README.md b/README.md
+index ef98d5d..2e64028 100644
+--- a/README.md
++++ b/README.md
+@@ -120,6 +120,19 @@ Depois disso o fluxo é:
+ 2. a skill baixa, transcreve, escolhe os cortes e renderiza;
+ 3. você recebe os MP4s e a tabela com o gancho de cada um.
+ 
++## Modo automático: lives viram posts sozinhas
++
++Com o **vigia** ligado no seu computador, a máquina acompanha os canais que você escolher e, quando um entra ao vivo:
++
++1. grava a live em blocos de 15 min;
++2. em cada bloco, o Claude Code (modo automático) lê a transcrição e escolhe até 2 cortes com nota 7 ou mais, sem repetir assunto;
++3. confere, renderiza e **posta no YouTube (Shorts), TikTok e Instagram (Reels)** pelo [Postiz](https://postiz.com), com título, descrição, hashtags e crédito ao streamer;
++4. espaça os posts (45 min entre um e outro, até 6 por dia, ajustável).
++
++Para configurar, peça no Claude Code: **"/maquina-cortes-gta liga o modo automático"**. Você vai precisar de uma conta no Postiz com as três redes conectadas. Para pausar, crie o arquivo `~/.maquina-cortes-gta/PAUSAR`; tudo fica registrado em `~/.maquina-cortes-gta/automatico.log`.
++
++O computador precisa ficar ligado durante as lives. Cortar a live de outra pessoa sem permissão pode gerar strike: combine com o streamer.
++
+ ## Como a skill escolhe os cortes
+ 
+ A skill lê a transcrição (palavras com tempo) e:
+@@ -155,7 +168,10 @@ skills/maquina-cortes-gta/
+     │   ├── conferir-cortes.mjs   confere o cuts.json antes do render (gancho, payoff, duração, sobreposição)
+     │   ├── timeline.mjs          a conta da linha do tempo (pausas, jump cuts, viradas, legendas)
+     │   ├── buscar-imagens.mjs    busca de imagens no Google (API oficial)
+-    │   └── build.mjs             monta e renderiza cada corte
++    │   ├── build.mjs             monta e renderiza cada corte
++    │   ├── vigia-lives.mjs       modo automático: vigia, grava, corta, renderiza e posta
++    │   ├── postar.mjs            posta no YouTube, TikTok e Instagram pelo Postiz
++    │   └── bin.mjs               roda programas externos sem shell (funciona no Windows)
+     └── src/
+         ├── Root.jsx              a composição de 1080×1920
+         └── SplitCut.jsx          as duas metades, legenda, zoom, popups, marca d'água e final "Seguir"
+@@ -179,7 +195,7 @@ Você é o responsável pelo vídeo que usa como origem e pelo que publica: dire
+ 
+ ## Privacidade
+ 
+-Tudo roda localmente: o vídeo, a transcrição e os cortes ficam no seu computador. A skill só acessa a internet para baixar o vídeo que você indicar, instalar as dependências e carregar a fonte da legenda (Google Fonts) na hora do render.
++Tudo roda localmente: o vídeo, a transcrição e os cortes ficam no seu computador. No modo automático, os cortes prontos são enviados ao Postiz para publicar, e cada bloco passa pelo Claude Code. A skill só acessa a internet para baixar o vídeo que você indicar, instalar as dependências e carregar a fonte da legenda (Google Fonts) na hora do render.
+ 
+ ## Créditos
+ 
+diff --git a/skills/maquina-cortes-gta/SKILL.md b/skills/maquina-cortes-gta/SKILL.md
+index 8128275..dba23bd 100644
+--- a/skills/maquina-cortes-gta/SKILL.md
++++ b/skills/maquina-cortes-gta/SKILL.md
+@@ -1,6 +1,6 @@
+ ---
+ name: maquina-cortes-gta
+-description: Transforma um vídeo de streamer ou podcast (link ou arquivo) em vários cortes verticais de Shorts sobre GTA 6, cada um com um assunto e um gancho diferente, no estilo metade streamer e metade vídeo, com legenda palavra por palavra, pausas cortadas, zoom nos cortes e a marca d'água do seu perfil (logo + nome). Use com /maquina-cortes-gta ou quando o usuário pedir cortes de GTA, "cortar esse vídeo" ou "máquina de cortes".
++description: Transforma um vídeo de streamer ou podcast (link ou arquivo) em vários cortes verticais de Shorts sobre GTA 6, cada um com um assunto e um gancho diferente, no estilo metade streamer e metade vídeo, com legenda palavra por palavra, pausas cortadas, zoom nos cortes e a marca d'água do seu perfil (logo + nome). Também tem um modo automático que vigia lives, corta e posta sozinho no YouTube, TikTok e Instagram. Use com /maquina-cortes-gta ou quando o usuário pedir cortes de GTA, "cortar esse vídeo", "máquina de cortes", "modo automático" ou "postar as lives sozinho".
+ ---
+ 
+ # máquina-cortes-gta
+@@ -163,6 +163,22 @@ Gera `./01-....mp4` etc. (1080×1920, 30 fps, H.264). O **primeiro render** pode
+ 
+ Responda curto: a lista dos arquivos e uma tabela com **assunto, gancho (a frase), duração, nota e título sugerido** de cada corte. Nada além disso.
+ 
++## Modo automático (lives → cortes → posts)
++
++Quando o usuário pedir para **ligar o modo automático**, vigiar lives ou postar sozinho, faça a configuração abaixo (uma vez). Depois disso o vigia roda sem o Claude na conversa: detecta a live, grava em blocos de 15 min, chama o Claude Code em modo `-p` para escolher os cortes de cada bloco, confere, renderiza e posta no YouTube (Shorts), TikTok e Instagram (Reels) pelo **Postiz**.
++
++1. **Pré-requisitos:** `setup.mjs --check` precisa mostrar `perfilConfigurado: true` (seção 1). Se `postiz: false`, rode `npm install -g postiz`.
++2. **Postiz:** o usuário cria a conta em postiz.com (ou instala o Postiz próprio), conecta lá o YouTube, o TikTok e o Instagram (Instagram precisa ser conta profissional) e roda `postiz auth:login` (termina no navegador). Você não faz o login por ele.
++3. **Config:** `node <motor>/vigia-lives.mjs --exemplo` cria `~/.maquina-cortes-gta/automatico.json`. Pergunte **os canais a vigiar** (links do YouTube, Twitch ou Kick) e preencha `canais`. Rode `postiz integrations:list` e ponha o id de cada rede em `redes` (deixe vazio o que o usuário não quiser).
++4. **Regras de cada rede:** `node <motor>/postar.mjs --conferir`. Leia as `rules` e os campos obrigatórios de cada rede e complete `ajustes` no `automatico.json` (o Postiz descarta em silêncio o que não se aplica e recusa o que falta). No TikTok, mantenha `content_posting_method: "DIRECT_POST"`; `"UPLOAD"` só deixa o vídeo na caixa de entrada do app.
++5. **Teste sem postar:** `node <motor>/vigia-lives.mjs --uma-vez CAMINHO/DE/UM/VIDEO.mp4 --sem-postar`. Confira o corte gerado com o usuário.
++6. **Ligar:** o usuário deixa rodando num terminal: `node ~/.maquina-cortes-gta/engine/scripts/vigia-lives.mjs`. Para subir junto com o computador: Windows, Agendador de Tarefas ("ao fazer logon"); macOS/Linux, `npx pm2 start <caminho>/vigia-lives.mjs --name vigia && npx pm2 save`.
++7. **Pausar:** criar o arquivo `~/.maquina-cortes-gta/PAUSAR` (ou `"pausado": true`). **Parar:** Ctrl+C. **Ver o que aconteceu:** `~/.maquina-cortes-gta/automatico.log`.
++
++Ajustes no `automatico.json` (relido a cada volta, sem reiniciar): `notaMinima` (7), `maxCortesPorBloco` (2), `maxPostsPorDia` (6), `minutosEntrePosts` (45), `blocoSegundos` (900), `hashtags`, `creditar` (põe "Créditos: canal" na legenda), `bottom` (link ou arquivo da metade de baixo), `apagarBrutos` (apaga a gravação bruta depois de processar), `claudeArgs` (permissões do Claude Code no modo `-p`).
++
++Avise o usuário, uma vez, em poucas linhas: o computador precisa ficar ligado durante as lives; cada bloco usa o Claude Code e uma live de 1080p ocupa alguns GB por hora (o bruto é apagado depois); cortar a live de outra pessoa sem permissão pode gerar strike, então vale o OK do streamer.
++
+ ## Regras
+ 
+ - Estilo: metade de cima o streamer (jump cuts com zoom), metade de baixo o vídeo; legenda palavra por palavra na divisa, caixa alta, palavra falada em amarelo; marca d'água no canto superior direito; final "Seguir". Detalhes em `references/estilo-metade-metade.md` e `references/estilo-referencias.md`.
+diff --git a/skills/maquina-cortes-gta/references/problemas.md b/skills/maquina-cortes-gta/references/problemas.md
+index f9a5801..606cff0 100644
+--- a/skills/maquina-cortes-gta/references/problemas.md
++++ b/skills/maquina-cortes-gta/references/problemas.md
+@@ -22,3 +22,10 @@
+ | `conferir-cortes.mjs` aponta "gancho não está no começo" | O `start` está antes ou depois da frase do gancho | Veja o segundo exato com `transcript-text.mjs --de X --ate Y --palavras` e ajuste o `start`. |
+ | Imagem ignorada no build | Arquivo não existe, a busca não trouxe nada ou a imagem cai depois do fim do corte (pausas removidas encurtam o corte) | Confira o caminho e o `at` (em segundos do vídeo de origem). |
+ | Um corte falhou e os outros não | Erro só naquele corte | Refaça só ele: `node <motor>/build.mjs work . ID_DO_CORTE`. |
++| Vigia: "Falta claude" ou "Falta postiz" | O programa não está instalado ou não está no PATH | Claude Code: instale e abra uma vez. Postiz: `npm install -g postiz`. Abra um terminal novo. |
++| Vigia não detecta a live | Link do canal errado, ou a live é agendada e ainda não começou | Use o link do canal (`youtube.com/@canal`, `twitch.tv/canal`); o vigia confere a cada 2 min. Teste: `yt-dlp --print live_status LINK/live`. |
++| Vigia: "o Claude Code falhou" | Falta permissão no modo `-p` ou o login expirou | Abra o Claude Code uma vez para conferir o login; ajuste `claudeArgs` no `automatico.json`. |
++| Post "agendado" mas não aparece no TikTok | `content_posting_method` em `"UPLOAD"` | Use `"DIRECT_POST"` em `ajustes.tiktok`. |
++| Postiz recusa o post | Falta um campo obrigatório da rede | `node postar.mjs --conferir` e complete `ajustes` no `automatico.json`. |
++| "N blocos na fila" no log | O computador processa mais devagar que a live | Aumente `blocoSegundos`, use o modelo `base` do whisper ou deixe a fila esvaziar depois da live. |
++| "limite de posts por dia atingido" | `maxPostsPorDia` alcançado | Normal. O corte fica salvo no disco; suba o limite se quiser. |
+diff --git a/skills/maquina-cortes-gta/scripts/setup.mjs b/skills/maquina-cortes-gta/scripts/setup.mjs
+index 506b28d..bbb02f3 100644
+--- a/skills/maquina-cortes-gta/scripts/setup.mjs
++++ b/skills/maquina-cortes-gta/scripts/setup.mjs
+@@ -20,6 +20,7 @@ const ENGINE = path.join(HOME, 'engine');
+ const WHISPER = path.join(HOME, 'whisper.cpp');
+ const CONFIG = path.join(HOME, 'config.json');
+ const TEMPLATE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'template');
++const REFERENCES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'references');
+ const WHISPER_VERSION = '1.5.5';
+ 
+ const args = process.argv.slice(2);
+@@ -54,11 +55,12 @@ function templateHash() {
+     for (const f of fs.readdirSync(d).sort()) {
+       const p = path.join(d, f);
+       if (fs.statSync(p).isDirectory()) walk(p);
+-      else h.update(path.relative(TEMPLATE, p)).update(fs.readFileSync(p));
++      else h.update(path.basename(path.dirname(p)) + '/' + f).update(fs.readFileSync(p));
+     }
+   };
+   walk(path.join(TEMPLATE, 'src'));
+   walk(path.join(TEMPLATE, 'scripts'));
++  walk(REFERENCES);
+   h.update(fs.readFileSync(path.join(TEMPLATE, 'package.json')));
+   return h.digest('hex').slice(0, 12);
+ }
+@@ -86,6 +88,10 @@ function status() {
+     efeitosGerados: fs.existsSync(path.join(HOME, 'sfx')) ? fs.readdirSync(path.join(HOME, 'sfx')).filter((f) => /\.(mp3|wav)$/.test(f)).length : 0,
+     engine: fs.existsSync(path.join(ENGINE, 'node_modules', 'remotion')),
+     motorAtualizado: engineUpToDate(),
++    // modo automático (opcional)
++    claudeCode: !!which('claude'),
++    postiz: !!which('postiz'),
++    automaticoConfigurado: fs.existsSync(path.join(HOME, 'automatico.json')),
+     whisperModel: fs.existsSync(path.join(WHISPER, `ggml-${model}.bin`)),
+     perfilConfigurado: !!(c.profileName && c.logo && fs.existsSync(path.join(HOME, c.logo))),
+     config: c,
+@@ -165,6 +171,8 @@ if (!s0.engine) {
+     execSync('npm install --no-audit --no-fund', {cwd: ENGINE, stdio: 'inherit'});
+   }
+ }
++// os guias (ganchos.md etc.) vão junto: o modo automático os lê de dentro do motor
++fs.cpSync(REFERENCES, path.join(ENGINE, 'references'), {recursive: true});
+ fs.writeFileSync(STAMP, templateHash());
+ 
+ // whisper.cpp + modelo
+diff --git a/skills/maquina-cortes-gta/template/scripts/bin.mjs b/skills/maquina-cortes-gta/template/scripts/bin.mjs
+new file mode 100644
+index 0000000..bc099ae
+--- /dev/null
++++ b/skills/maquina-cortes-gta/template/scripts/bin.mjs
+@@ -0,0 +1,75 @@
++// Acha e roda programas de linha de comando sem shell, inclusive no Windows (onde os instalados pelo npm
++// são atalhos .cmd que não rodam sem shell). Sem shell, textos com aspas e quebras de linha passam intactos.
++import {spawn, spawnSync} from 'node:child_process';
++import fs from 'node:fs';
++import path from 'node:path';
++
++const WIN = process.platform === 'win32';
++const cache = new Map();
++
++function npmRoot() {
++  const r = spawnSync(WIN ? 'npm.cmd' : 'npm', ['root', '-g'], {encoding: 'utf8', shell: WIN});
++  return r.status === 0 ? r.stdout.trim() : null;
++}
++
++// name: comando; pkg: pacote npm que o instala (para achar o .js no Windows)
++export function resolveBin(name, pkg) {
++  const key = `${name}|${pkg}`;
++  if (cache.has(key)) return cache.get(key);
++  let res = null;
++  const w = spawnSync(WIN ? 'where' : 'which', [name], {encoding: 'utf8'});
++  const found = w.status === 0 ? w.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : [];
++  const exe = found.find((f) => !WIN || /\.exe$/i.test(f));
++  if (exe) res = {cmd: exe, pre: []};
++  else if (pkg) {
++    const root = npmRoot();
++    const pj = root && path.join(root, pkg, 'package.json');
++    if (pj && fs.existsSync(pj)) {
++      const meta = JSON.parse(fs.readFileSync(pj, 'utf8'));
++      const rel = typeof meta.bin === 'string' ? meta.bin : meta.bin?.[name] ?? Object.values(meta.bin || {})[0];
++      if (rel) res = {cmd: process.execPath, pre: [path.join(root, pkg, rel)]};
++    }
++  }
++  cache.set(key, res);
++  return res;
++}
++
++export function runBin(name, pkg, args, opts = {}) {
++  const b = resolveBin(name, pkg);
++  if (!b) return {ok: false, out: '', err: `"${name}" não encontrado no PATH.`};
++  const r = spawnSync(b.cmd, [...b.pre, ...args], {encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts});
++  return {ok: r.status === 0, out: r.stdout || '', err: (r.stderr || r.error?.message || '').trim(), status: r.status};
++}
++
++// Versão assíncrona (não trava o Node enquanto roda: a gravação da live continua fluindo).
++export function runAsync(cmd, args, opts = {}) {
++  return new Promise((resolve) => {
++    let out = '';
++    let err = '';
++    let p;
++    try {
++      p = spawn(cmd, args, {...opts, stdio: [opts.input != null ? 'pipe' : 'ignore', 'pipe', 'pipe']});
++    } catch (e) {
++      resolve({ok: false, out: '', err: e.message});
++      return;
++    }
++    const cap = (s, d) => (s.length > 2e6 ? s.slice(-1e6) : s) + d;
++    p.stdout.on('data', (d) => (out = cap(out, d)));
++    p.stderr.on('data', (d) => (err = cap(err, d)));
++    if (opts.input != null) p.stdin.end(opts.input);
++    const timer = opts.timeoutMs ? setTimeout(() => p.kill(), opts.timeoutMs) : null;
++    p.on('error', (e) => {
++      if (timer) clearTimeout(timer);
++      resolve({ok: false, out, err: e.message});
++    });
++    p.on('close', (code) => {
++      if (timer) clearTimeout(timer);
++      resolve({ok: code === 0, out, err: err.trim(), status: code});
++    });
++  });
++}
++export function runBinAsync(name, pkg, args, opts = {}) {
++  const b = resolveBin(name, pkg);
++  if (!b) return Promise.resolve({ok: false, out: '', err: `"${name}" não encontrado no PATH.`});
++  return runAsync(b.cmd, [...b.pre, ...args], opts);
++}
+diff --git a/skills/maquina-cortes-gta/template/scripts/postar.mjs b/skills/maquina-cortes-gta/template/scripts/postar.mjs
+new file mode 100644
+index 0000000..686ead9
+--- /dev/null
++++ b/skills/maquina-cortes-gta/template/scripts/postar.mjs
+@@ -0,0 +1,86 @@
++#!/usr/bin/env node
++// Posta um corte no YouTube (Shorts), no TikTok e no Instagram (Reels) pelo Postiz (CLI "postiz").
++// As redes e os ajustes ficam em ~/.maquina-cortes-gta/automatico.json ("redes" e "ajustes").
++//
++//   node postar.mjs --conferir                      confere o login e mostra as regras de cada rede configurada
++//   node postar.mjs <video.mp4> "Título" ["descrição"] [--rede youtube] [--quando 2026-11-20T18:00:00Z]
++//                                                   posta agora (+2 min) ou na data dada
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import {fileURLToPath} from 'node:url';
++import {runBinAsync} from './bin.mjs';
++
++const HOME = path.join(os.homedir(), '.maquina-cortes-gta');
++const postiz = (args) => runBinAsync('postiz', 'postiz', args, {timeoutMs: 15 * 60e3});
++
++export function loadAuto() {
++  try {
++    return JSON.parse(fs.readFileSync(path.join(HOME, 'automatico.json'), 'utf8'));
++  } catch {
++    return {};
++  }
++}
++
++// Ajustes padrão de cada rede. O que o Postiz exigir a mais vai em "ajustes" no automatico.json
++// (veja com --conferir). TikTok: DIRECT_POST publica; "UPLOAD" só deixa na caixa de entrada do app.
++const DEFAULTS = {
++  youtube: (t) => ({title: t.slice(0, 100), type: 'public'}),
++  tiktok: () => ({privacy_level: 'PUBLIC_TO_EVERYONE', duet: false, stitch: false, comment: true, content_posting_method: 'DIRECT_POST'}),
++  instagram: () => ({post_type: 'post'}),
++};
++
++function caption(rede, {titulo, descricao, credito}, cfg) {
++  const tags = (cfg.hashtags ?? ['#gta6', '#gta', '#shorts']).join(' ');
++  const parts = rede === 'youtube' ? [descricao] : [titulo, descricao];
++  if (credito) parts.push(`Créditos: ${credito}`);
++  parts.push(tags);
++  return parts.filter(Boolean).join('\n\n');
++}
++
++// Devolve [{rede, ok, erro?}]
++export async function postClip({video, titulo, descricao = '', credito = '', quando = new Date(Date.now() + 2 * 60e3), redes, cfg = loadAuto(), log = console.log}) {
++  const alvo = Object.entries(cfg.redes || {}).filter(([r, id]) => id && (!redes || redes.includes(r)));
++  if (!alvo.length) return [{rede: '-', ok: false, erro: 'nenhuma rede em "redes" no automatico.json'}];
++  const up = await postiz(['upload', video]);
++  let url;
++  try {
++    url = JSON.parse(up.out).path;
++  } catch {
++    /* sem json */
++  }
++  if (!up.ok || !url) return [{rede: '-', ok: false, erro: `upload falhou: ${up.err || up.out}`.slice(0, 300)}];
++  const out = [];
++  for (const [rede, id] of alvo) {
++    const settings = {...(DEFAULTS[rede]?.(titulo) || {}), ...(cfg.ajustes?.[rede] || {})};
++    const r = await postiz(['posts:create', '-c', caption(rede, {titulo, descricao, credito}, cfg), '-s', quando.toISOString(), '-m', url, '-i', id, '--settings', JSON.stringify(settings)]);
++    out.push({rede, ok: r.ok, erro: r.ok ? undefined : (r.err || r.out).slice(0, 300)});
++    log(`${r.ok ? 'agendado' : 'FALHOU'} ${rede} ${quando.toISOString()} ${titulo}${r.ok ? '' : ' :: ' + (r.err || r.out).slice(0, 200)}`);
++  }
++  return out;
++}
++
++if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
++  const args = process.argv.slice(2);
++  const cfg = loadAuto();
++  if (args[0] === '--conferir') {
++    const a = await postiz(['auth:status']);
++    console.log(a.ok ? 'Postiz: logado.' : `Postiz: NÃO logado (${a.err || a.out}). Rode: postiz auth:login`);
++    if (!a.ok) process.exit(1);
++    console.log('\nContas conectadas no Postiz:\n' + (await postiz(['integrations:list'])).out);
++    for (const [rede, id] of Object.entries(cfg.redes || {})) {
++      if (!id) continue;
++      const s = await postiz(['integrations:settings', id]);
++      console.log(`\n=== ${rede} (${id}) ===\n${s.ok ? s.out : 'erro: ' + s.err}`);
++    }
++    process.exit(0);
++  }
++  const [video, titulo, descricao] = args.filter((x, i) => !x.startsWith('--') && !args[i - 1]?.startsWith('--'));
++  if (!video || !titulo || !fs.existsSync(video)) {
++    console.error('Uso: node postar.mjs <video.mp4> "Título" ["descrição"] [--rede youtube] [--quando ISO]  |  node postar.mjs --conferir');
++    process.exit(1);
++  }
++  const opt = (n) => (args.includes(n) ? args[args.indexOf(n) + 1] : undefined);
++  const res = await postClip({video, titulo, descricao, redes: opt('--rede')?.split(','), quando: opt('--quando') ? new Date(opt('--quando')) : undefined, cfg});
++  process.exit(res.every((r) => r.ok) ? 0 : 1);
++}
+diff --git a/skills/maquina-cortes-gta/template/scripts/vigia-lives.mjs b/skills/maquina-cortes-gta/template/scripts/vigia-lives.mjs
+new file mode 100644
+index 0000000..ad80482
+--- /dev/null
++++ b/skills/maquina-cortes-gta/template/scripts/vigia-lives.mjs
+@@ -0,0 +1,329 @@
++#!/usr/bin/env node
++// MODO AUTOMÁTICO: vigia canais, grava as lives em blocos, escolhe os cortes com o Claude Code, renderiza e posta
++// no YouTube, TikTok e Instagram pelo Postiz. Roda no seu computador enquanto estiver aberto.
++//
++//   node vigia-lives.mjs                       vigia os canais do automatico.json (deixe rodando)
++//   node vigia-lives.mjs --exemplo             cria ~/.maquina-cortes-gta/automatico.json de exemplo
++//   node vigia-lives.mjs --uma-vez video.mp4   processa um arquivo como se fosse um bloco de live (teste)
++//   ... --sem-postar                           faz tudo, menos postar (teste)
++//
++// Pausar: crie o arquivo ~/.maquina-cortes-gta/PAUSAR (ou "pausado": true no automatico.json). Apague para voltar.
++// Registro de tudo que acontece: ~/.maquina-cortes-gta/automatico.log
++import {spawn} from 'node:child_process';
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import {fileURLToPath} from 'node:url';
++import {resolveBin, runAsync, runBinAsync} from './bin.mjs';
++import {postClip} from './postar.mjs';
++
++const HOME = path.join(os.homedir(), '.maquina-cortes-gta');
++const ENGINE = path.join(HOME, 'engine');
++const S = path.dirname(fileURLToPath(import.meta.url));
++const CFG = path.join(HOME, 'automatico.json');
++const STATE = path.join(HOME, 'automatico-estado.json');
++const LOG = path.join(HOME, 'automatico.log');
++const PAUSE = path.join(HOME, 'PAUSAR');
++const args = process.argv.slice(2);
++const DRY = args.includes('--sem-postar');
++
++const EXEMPLO = {
++  canais: ['https://www.youtube.com/@CANAL_DO_STREAMER', 'https://www.twitch.tv/CANAL_DO_STREAMER'],
++  redes: {youtube: 'ID_DO_POSTIZ', tiktok: 'ID_DO_POSTIZ', instagram: 'ID_DO_POSTIZ'},
++  ajustes: {youtube: {}, tiktok: {}, instagram: {}},
++  hashtags: ['#gta6', '#gta', '#shorts'],
++  creditar: true,
++  idioma: 'pt',
++  bottom: 'https://www.youtube.com/watch?v=rz1B4B2yBZY',
++  pasta: path.join(HOME, 'auto'),
++  blocoSegundos: 900,
++  checarACadaSegundos: 120,
++  notaMinima: 7,
++  maxCortesPorBloco: 2,
++  maxPostsPorDia: 6,
++  minutosEntrePosts: 45,
++  apagarBrutos: true,
++  claudeArgs: ['--allowedTools', 'Read,Write,Edit,Bash(node:*)'],
++  pausado: false,
++};
++
++const log = (...m) => {
++  const line = `[${new Date().toLocaleString('pt-BR')}] ${m.join(' ')}`;
++  console.log(line);
++  try {
++    fs.appendFileSync(LOG, line + '\n');
++  } catch {
++    /* sem log em disco */
++  }
++};
++const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
++const readJson = (f, fb) => {
++  try {
++    return JSON.parse(fs.readFileSync(f, 'utf8'));
++  } catch {
++    return fb;
++  }
++};
++const loadCfg = () => ({...EXEMPLO, ...readJson(CFG, {})});
++const state = readJson(STATE, {gravacoes: {}, postados: [], agenda: [], recentes: []});
++const save = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
++const slug = (s) =>
++  String(s || 'canal')
++    .toLowerCase()
++    .normalize('NFD')
++    .replace(/[\u0300-\u036f]/g, '')
++    .replace(/[^a-z0-9]+/g, '-')
++    .replace(/^-|-$/g, '')
++    .slice(0, 40) || 'canal';
++const paused = (cfg) => cfg.pausado || fs.existsSync(PAUSE);
++
++// ---------- config de exemplo ----------
++if (args.includes('--exemplo')) {
++  fs.mkdirSync(HOME, {recursive: true});
++  if (fs.existsSync(CFG)) console.log(`Já existe: ${CFG} (não mexi).`);
++  else {
++    fs.writeFileSync(CFG, JSON.stringify(EXEMPLO, null, 2));
++    console.log(`Criado: ${CFG}. Preencha "canais" e "redes".`);
++  }
++  process.exit(0);
++}
++
++// ---------- live? ----------
++const liveUrl = (u) => (/youtube\.com\/(@|channel\/|c\/)/.test(u) && !/\/live\/?$/.test(u) ? u.replace(/\/$/, '') + '/live' : u);
++async function liveInfo(url) {
++  const r = await runAsync(resolveBin('yt-dlp')?.cmd || 'yt-dlp', ['--no-warnings', '--skip-download', '--playlist-items', '1', '--print', '%(live_status)s\t%(id)s\t%(channel,uploader)s\t%(title)s', liveUrl(url)], {timeoutMs: 90e3});
++  if (!r.ok) return null;
++  const [status, id, canal, titulo] = r.out.trim().split('\n').pop().split('\t');
++  return status === 'is_live' ? {id, canal, titulo, url: liveUrl(url)} : null;
++}
++
++// ---------- gravação em blocos ----------
++const recorders = new Map(); // url -> {dir, info, done}
++function startRecording(url, info, cfg) {
++  const dir = path.join(cfg.pasta, slug(info.canal), `${new Date().toISOString().slice(0, 10)}-${slug(info.id)}`);
++  fs.mkdirSync(dir, {recursive: true});
++  const part = `p${Date.now()}`;
++  const rec = {dir, info, done: false, part};
++  state.gravacoes[dir] ??= {processados: [], info, inicio: Date.now()};
++  save();
++  const yt = spawn(resolveBin('yt-dlp')?.cmd || 'yt-dlp', ['--no-warnings', '--no-part', '-f', 'best[height<=1080]/best', '-o', '-', info.url], {stdio: ['ignore', 'pipe', 'ignore']});
++  const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-map', '0:v:0?', '-map', '0:a:0?', '-c', 'copy', '-f', 'segment', '-segment_time', String(cfg.blocoSegundos), '-reset_timestamps', '1', path.join(dir, `${part}-%03d.ts`)], {stdio: ['pipe', 'ignore', 'ignore']});
++  yt.stdout.pipe(ff.stdin);
++  yt.stdout.on('error', () => {});
++  ff.stdin.on('error', () => {});
++  yt.on('close', () => ff.stdin.end());
++  yt.on('error', (e) => log(`yt-dlp falhou: ${e.message}`));
++  ff.on('close', () => {
++    rec.done = true;
++    log(`Gravação parou: ${info.canal} (a live acabou ou caiu; se ainda estiver no ar, volto a gravar na próxima checagem).`);
++  });
++  recorders.set(url, rec);
++  log(`AO VIVO: ${info.canal} — "${info.titulo}". Gravando em blocos de ${cfg.blocoSegundos >= 60 ? Math.round(cfg.blocoSegundos / 60) + " min" : cfg.blocoSegundos + " s"}.`);
++}
++
++// blocos prontos = todos menos o último de cada parte (que ainda está sendo gravado), a não ser que a gravação acabou
++function readyBlocks() {
++  const out = [];
++  for (const [dir, g] of Object.entries(state.gravacoes)) {
++    if (!fs.existsSync(dir)) continue;
++    const live = [...recorders.values()].find((r) => r.dir === dir && !r.done);
++    const files = fs.readdirSync(dir).filter((f) => /^p\d+-\d{3}\.ts$/.test(f)).sort();
++    for (const f of files) {
++      if (g.processados.includes(f)) continue;
++      const growing = live && f.startsWith(live.part) && f === files.filter((x) => x.startsWith(live.part)).pop();
++      if (!growing) out.push({dir, file: f, info: g.info});
++    }
++  }
++  return out;
++}
++
++// ---------- agenda de posts ----------
++function nextSlot(cfg) {
++  const now = Date.now();
++  state.agenda = state.agenda.filter((t) => t > now - 26 * 3600e3);
++  const last = state.agenda.length ? Math.max(...state.agenda) : 0;
++  const t = Math.max(now + 2 * 60e3, last + cfg.minutosEntrePosts * 60e3);
++  const inDay = state.agenda.filter((x) => x > t - 24 * 3600e3).length;
++  if (inDay >= cfg.maxPostsPorDia || t > now + 24 * 3600e3) return null;
++  return t;
++}
++
++// ---------- vídeo de baixo (baixado uma vez) ----------
++async function bottomFile(cfg) {
++  if (cfg.bottom && fs.existsSync(cfg.bottom)) return cfg.bottom;
++  const cached = path.join(HOME, 'cache', 'bottom.mp4');
++  if (fs.existsSync(cached)) return cached;
++  fs.mkdirSync(path.dirname(cached), {recursive: true});
++  log('Baixando o vídeo da metade de baixo (uma vez só)…');
++  const r = await runAsync(resolveBin('yt-dlp')?.cmd || 'yt-dlp', ['-S', 'res:720', '-f', 'bv*+ba/b', '--merge-output-format', 'mp4', '--no-playlist', '-o', cached, cfg.bottom]);
++  return r.ok && fs.existsSync(cached) ? cached : null;
++}
++
++// ---------- um bloco: transcrever → Claude escolhe → conferir → render → postar ----------
++async function processBlock({dir, file, info}, cfg) {
++  const src = path.join(dir, file);
++  const base = path.join(dir, file.replace(/\.ts$|\.mp4$/i, ''));
++  const work = path.join(base, 'work');
++  fs.mkdirSync(work, {recursive: true});
++  const tag = `${info.canal} ${file}`;
++
++  let r = await runAsync('ffmpeg', ['-y', '-v', 'error', '-i', src, '-c', 'copy', '-movflags', '+faststart', path.join(work, 'source.mp4')]);
++  if (!r.ok) r = await runAsync('ffmpeg', ['-y', '-v', 'error', '-i', src, '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', path.join(work, 'source.mp4')]);
++  if (!r.ok) return log(`${tag}: não consegui preparar o vídeo (${r.err.slice(0, 150)}).`);
++  const bottom = await bottomFile(cfg);
++  if (!bottom) return log(`${tag}: sem vídeo da metade de baixo (confira "bottom" no automatico.json).`);
++  fs.copyFileSync(bottom, path.join(work, 'bottom.mp4'));
++  await runAsync('ffmpeg', ['-y', '-v', 'error', '-ss', '20', '-i', path.join(work, 'source.mp4'), '-frames:v', '1', path.join(work, 'frame.jpg')]);
++
++  log(`${tag}: transcrevendo…`);
++  r = await runAsync(process.execPath, [path.join(S, 'transcribe.mjs'), path.join(work, 'source.mp4'), work, cfg.idioma], {cwd: ENGINE});
++  if (!r.ok) return log(`${tag}: transcrição falhou (${r.err.slice(-200)}).`);
++  const meta = readJson(path.join(work, 'meta.json'), {});
++  if ((meta.duration || 0) < 120) return log(`${tag}: bloco curto demais (${Math.round(meta.duration || 0)} s), pulei.`);
++
++  const recentes = state.recentes.filter((x) => x.t > Date.now() - 48 * 3600e3).map((x) => x.assunto);
++  const prompt = [
++    'Modo automático da máquina-cortes-gta. NÃO faça perguntas: ninguém vai responder.',
++    `Pasta de trabalho: ${work} (já tem captions.json, silences.json, meta.json, source.mp4 e frame.jpg).`,
++    `Live: "${info.titulo}" de ${info.canal}. Bloco de ${Math.round(meta.duration / 60)} min.`,
++    `1. Leia o guia ${path.join(ENGINE, 'references', 'ganchos.md')}.`,
++    `2. Leia a transcrição: node "${path.join(S, 'transcript-text.mjs')}" "${work}" (use --de/--ate/--palavras para acertar os tempos).`,
++    `3. Olhe ${path.join(work, 'frame.jpg')} para acertar "focus" (ou "crop", se for live com várias câmeras).`,
++    `4. Escolha de 0 a ${cfg.maxCortesPorBloco} cortes com nota >= ${cfg.notaMinima}, de 20 a 60 s, de assuntos diferentes, começando na frase do gancho e terminando no payoff. Só cortes sobre GTA.`,
++    recentes.length ? `   Não repita estes assuntos, já postados nas últimas 48 h: ${recentes.join('; ')}.` : '',
++    '   Se nada passar da nota, grave {"clips": []}. Não force corte ruim.',
++    `5. Grave ${path.join(work, 'cuts.json')}: {"clips":[{"id":"01-assunto","start":0,"end":0,"focus":{"x":50,"y":35},"assunto":"","hook":"","nota":0,"titulo":"até 60 caracteres, sem entregar o payoff","descricao":"1 frase","turns":[]}]}. Sem "images".`,
++    `6. Rode node "${path.join(S, 'conferir-cortes.mjs')}" "${work}" e corrija até sair "Sem erros"; trate os avisos.`,
++    '7. Não renderize e não poste. Responda só "ok".',
++  ]
++    .filter(Boolean)
++    .join('\n');
++  log(`${tag}: escolhendo os cortes (Claude Code)…`);
++  r = await runBinAsync('claude', '@anthropic-ai/claude-code', ['-p', ...cfg.claudeArgs], {input: prompt, cwd: base, timeoutMs: 25 * 60e3});
++  if (!r.ok) return log(`${tag}: o Claude Code falhou (${(r.err || r.out).slice(-200)}).`);
++
++  const cuts = readJson(path.join(work, 'cuts.json'), {clips: []});
++  cuts.clips = (cuts.clips || []).filter((c) => (c.nota ?? 0) >= cfg.notaMinima && !state.postados.includes(`${info.id}:${Math.round(c.start)}`));
++  if (!cuts.clips.length) return log(`${tag}: nenhum corte bom o bastante neste bloco.`);
++  fs.writeFileSync(path.join(work, 'cuts.json'), JSON.stringify(cuts, null, 2));
++  r = await runAsync(process.execPath, [path.join(S, 'conferir-cortes.mjs'), work]);
++  if (!r.ok) return log(`${tag}: o conferidor achou erro; não postei.\n${r.out.slice(-500)}`);
++
++  log(`${tag}: renderizando ${cuts.clips.length} corte(s)…`);
++  const outDir = path.join(base, 'cortes');
++  r = await runAsync(process.execPath, [path.join(S, 'build.mjs'), work, outDir], {cwd: ENGINE});
++  let results = [];
++  try {
++    results = JSON.parse(r.out.slice(r.out.lastIndexOf('\n[')));
++  } catch {
++    results = cuts.clips.map((c) => ({id: c.id, arquivo: path.join(outDir, `${c.id}.mp4`), ok: fs.existsSync(path.join(outDir, `${c.id}.mp4`))}));
++  }
++
++  for (const c of cuts.clips) {
++    const res = results.find((x) => x.id === c.id || x.id === String(c.id).replace(/[^\p{L}\p{N}_-]+/gu, '-'));
++    if (!res?.ok) {
++      log(`${tag}: o render de ${c.id} falhou.`);
++      continue;
++    }
++    const key = `${info.id}:${Math.round(c.start)}`;
++    state.recentes.push({assunto: c.assunto, t: Date.now()});
++    if (DRY) {
++      log(`${tag}: pronto (sem postar): ${res.arquivo} — "${c.titulo}" (nota ${c.nota})`);
++      continue;
++    }
++    const when = nextSlot(cfg);
++    if (!when) {
++      log(`${tag}: limite de ${cfg.maxPostsPorDia} posts por dia atingido; ${c.id} ficou só no disco (${res.arquivo}).`);
++      continue;
++    }
++    const out = await postClip({video: res.arquivo, titulo: c.titulo || c.hook, descricao: c.descricao || '', credito: cfg.creditar ? info.canal : '', quando: new Date(when), cfg, log});
++    if (out.some((o) => o.ok)) {
++      state.agenda.push(when);
++      state.postados.push(key);
++    }
++    save();
++  }
++  save();
++}
++
++// ---------- laço principal ----------
++async function main() {
++  fs.mkdirSync(HOME, {recursive: true});
++  for (const [bin, how] of [
++    ['yt-dlp', 'instale o yt-dlp'],
++    ['ffmpeg', 'instale o FFmpeg'],
++    ['claude', 'instale o Claude Code'],
++    ...(DRY ? [] : [['postiz', 'npm install -g postiz']]),
++  ]) {
++    if (!resolveBin(bin, bin === 'claude' ? '@anthropic-ai/claude-code' : bin === 'postiz' ? 'postiz' : undefined)) {
++      console.error(`Falta "${bin}": ${how}.`);
++      process.exit(1);
++    }
++  }
++
++  const once = args.indexOf('--uma-vez');
++  if (once >= 0) {
++    const f = path.resolve(args[once + 1] || '');
++    if (!fs.existsSync(f)) {
++      console.error('Uso: node vigia-lives.mjs --uma-vez video.mp4 [--sem-postar]');
++      process.exit(1);
++    }
++    const cfg = loadCfg();
++    const dir = path.join(cfg.pasta, 'teste', slug(path.basename(f)));
++    fs.mkdirSync(dir, {recursive: true});
++    const name = 'p0-000' + path.extname(f).toLowerCase();
++    fs.copyFileSync(f, path.join(dir, name));
++    await processBlock({dir, file: name, info: {id: slug(path.basename(f)), canal: 'teste', titulo: path.basename(f)}}, cfg);
++    save();
++    return;
++  }
++
++  log(`Vigia ligado${DRY ? ' (sem postar)' : ''}. Para pausar, crie ${PAUSE}.`);
++  let lastCheck = 0;
++  let wasPaused = false;
++  for (;;) {
++    const cfg = loadCfg(); // relido a cada volta: dá para mudar o automatico.json sem reiniciar
++    if (paused(cfg)) {
++      if (!wasPaused) log('Pausado. Gravações em andamento continuam; nada novo é processado nem postado.');
++      wasPaused = true;
++      await sleep(30e3);
++      continue;
++    }
++    if (wasPaused) log('Voltou a rodar.');
++    wasPaused = false;
++
++    if (Date.now() - lastCheck > cfg.checarACadaSegundos * 1000) {
++      lastCheck = Date.now();
++      for (const url of cfg.canais || []) {
++        const rec = recorders.get(url);
++        if (rec && !rec.done) continue;
++        const info = await liveInfo(url);
++        if (info) startRecording(url, info, cfg);
++      }
++    }
++
++    const ready = readyBlocks();
++    if (ready.length > 3) log(`Atenção: ${ready.length} blocos na fila (o processamento está mais lento que a live).`);
++    const next = ready[0];
++    if (!next) {
++      await sleep(15e3);
++      continue;
++    }
++    try {
++      await processBlock(next, cfg);
++    } catch (e) {
++      log(`Erro no bloco ${next.file}: ${e.message}`);
++    }
++    state.gravacoes[next.dir].processados.push(next.file);
++    if (cfg.apagarBrutos) {
++      fs.rmSync(path.join(next.dir, next.file), {force: true});
++      fs.rmSync(path.join(next.dir, next.file.replace(/\.ts$/, ''), 'work'), {recursive: true, force: true});
++    }
++    save();
++  }
++}
++
++main().catch((e) => {
++  log(`Vigia parou: ${e.stack || e.message}`);
++  process.exit(1);
++});
+-- 
+2.43.0
+
